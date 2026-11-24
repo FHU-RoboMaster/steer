@@ -168,6 +168,24 @@ SECTIONS
     . = ALIGN(4);
   } >DTCMRAM AT> FLASH
 
+  /* DMA-accessible buffers in D3 SRAM / RAM_D3. */
+  .ram_d3 (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.ram_d3)
+    *(.ram_d3*)
+    . = ALIGN(4);
+  } >RAM_D3
+
+  /* DMA-accessible buffers in AXI SRAM / RAM_D1. */
+ .axi_ram (NOLOAD) :
+ {
+  . = ALIGN(4);
+  *(.axi_ram)
+  *(.axi_ram*)
+  . = ALIGN(4);
+ } >RAM
+
  /* Initialized TLS data section */
   .tdata : ALIGN(4)
   {
