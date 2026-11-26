@@ -26,7 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdalign.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +46,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* FreeRTOS 动态堆放到 .axi_ram (RAM_D1, 320KB)，释放 64KB DTCM 空间。 */
+alignas(8) uint8_t ucHeap[configTOTAL_HEAP_SIZE] __attribute__((section(".axi_ram")));
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;

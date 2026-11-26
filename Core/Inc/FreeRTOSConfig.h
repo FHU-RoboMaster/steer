@@ -182,6 +182,8 @@ standard names. */
 #define configNUM_THREAD_LOCAL_STORAGE_POINTERS 1
 /* vsnprintf float conversion keeps state in newlib's per-task _reent. */
 #define configUSE_NEWLIB_REENTRANT 1
+/* 将 FreeRTOS 动态堆 (ucHeap) 放到 AXI SRAM (RAM_D1)，释放 64KB DTCM 空间。 */
+#define configAPPLICATION_ALLOCATED_HEAP 1
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

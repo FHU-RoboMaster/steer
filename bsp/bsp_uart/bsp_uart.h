@@ -5,6 +5,10 @@
 #include "main.h"
 #include "usart.h"
 
+#ifndef __cplusplus
+#include <stdalign.h>
+#endif
+
 // ==================== DMA 缓冲对齐与内存段宏（兼容 F4 / H7 Cache） ====================
 
 //! D-Cache cache line 字节数；有 D-Cache（如 STM32H723）为 32，无 Cache（如 F4）为 1。
@@ -16,12 +20,10 @@
 #define BSP_UART_DCACHE_LINE_SIZE (32U)
 #endif
 #endif
-#define BSP_UART_DMA_ALIGN __attribute__((aligned(32)))
 #else
 #ifndef BSP_UART_DCACHE_LINE_SIZE
 #define BSP_UART_DCACHE_LINE_SIZE (1U)
 #endif
-#define BSP_UART_DMA_ALIGN
 #endif
 
 //! 将缓冲区长度向上对齐到 D-Cache line 整数倍（无 Cache 平台保持原长度）。
@@ -52,12 +54,21 @@
 
 //! 声明兼容 F4 / H7（含 D-Cache）的 UART DMA 缓冲区（可前加 static）。
 //! 示例：static BSP_UART_DMA_BUFFER(uart_rx_buf, 128U);
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
 #define BSP_UART_DMA_BUFFER(name, size) \
-  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION
+  alignas(32) uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_SECTION
 
 //! 声明兼容 H7 BDMA（如 LPUART1）的 UART DMA 缓冲区（可前加 static）。
 #define BSP_UART_BDMA_BUFFER(name, size) \
-  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_ALIGN BSP_UART_BDMA_SECTION
+  alignas(32) uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_BDMA_SECTION
+#else
+#define BSP_UART_DMA_BUFFER(name, size) \
+  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_SECTION
+
+//! 声明兼容 H7 BDMA（如 LPUART1）的 UART DMA 缓冲区（可前加 static）。
+#define BSP_UART_BDMA_BUFFER(name, size) \
+  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_BDMA_SECTION
+#endif
 
 //! H7 兼容旧模块回退缓冲开关：当调用方未将 RX / FrameTx 缓冲放到 .axi_ram
 //! 或未按 32 字节对齐时，自动切换到 BSP 内部 .axi_ram 缓冲（F4 默认关闭，零开销）。

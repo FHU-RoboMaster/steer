@@ -4,6 +4,7 @@
 
 #include "vt13.h"
 
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -14,7 +15,8 @@
 #define VT13_SOF_1 (0xA9u)
 #define VT13_SOF_2 (0x53u)
 
-static BSP_UART_DMA_BUFFER(dma_buffer_, VT13_FRAME_SIZE * 2U);
+static alignas(32) uint8_t
+    dma_buffer_[BSP_UART_DMA_ALIGN_UP(VT13_FRAME_SIZE * 2U)] BSP_UART_DMA_SECTION;
 static uint8_t vt13_rx_buffer_[VT13_FRAME_SIZE];
 static uint8_t vt13_frame_accumulator_[VT13_FRAME_SIZE];
 static size_t vt13_frame_accumulator_size_ = 0U;

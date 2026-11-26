@@ -1,5 +1,6 @@
 #include "bsp_uart.h"
 
+#include <stdalign.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -32,12 +33,12 @@ static STM32UARTDoubleBufTx_t* stm32_uart_double_buf_tx_map[BSP_UART_NUMBER] = {
 #if BSP_UART_DMA_FALLBACK_ENABLE
 //! H7 兼容旧模块回退缓冲：位于 .axi_ram 且按 32 字节对齐。
 //! 当调用方把 RX/FrameTx 缓冲放在 DTCMRAM 或未按 Cache line 对齐时自动回退使用。
-static uint8_t stm32_uart_rx_fallback_buf
+static alignas(32) uint8_t stm32_uart_rx_fallback_buf
     [BSP_UART_NUMBER][BSP_UART_DMA_ALIGN_UP(BSP_UART_DMA_FALLBACK_RX_SIZE)]
-    BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION;
-static uint8_t stm32_uart_tx_fallback_buf
+    BSP_UART_DMA_SECTION;
+static alignas(32) uint8_t stm32_uart_tx_fallback_buf
     [BSP_UART_NUMBER][2U][BSP_UART_DMA_ALIGN_UP(BSP_UART_DMA_FALLBACK_TX_SIZE)]
-    BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION;
+    BSP_UART_DMA_SECTION;
 #endif
 
 //! RX 突发错误冷却恢复定时器（静态分配，避免 ISR 连续出错时风暴抢占 CPU）。

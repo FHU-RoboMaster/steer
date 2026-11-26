@@ -1,12 +1,14 @@
 #include "i6x.h"
 
+#include <stdalign.h>
 #include <string.h>
 
 #include "comp_utils.h"
 
 // ==================== DMA 缓冲与对象状态 ====================
 
-static BSP_UART_DMA_BUFFER(dma_buffer_, I6X_FRAME_SIZE * 2U);
+static alignas(32) uint8_t
+    dma_buffer_[BSP_UART_DMA_ALIGN_UP(I6X_FRAME_SIZE * 2U)] BSP_UART_DMA_SECTION;
 static uint8_t i6x_rx_buffer_[I6X_FRAME_SIZE];
 static volatile bool frame_ready_ = false;
 static I6X_t *instance_ = NULL;
