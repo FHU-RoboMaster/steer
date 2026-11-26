@@ -1,5 +1,7 @@
 set(_module_sources
     ${CMAKE_CURRENT_LIST_DIR}/DR16/dr16.c
+    ${CMAKE_CURRENT_LIST_DIR}/dm_imu/imu_fdcan.c
+    ${CMAKE_CURRENT_LIST_DIR}/dm_imu/imu_rs485.c
     ${CMAKE_CURRENT_LIST_DIR}/game/game.c
     ${CMAKE_CURRENT_LIST_DIR}/I6X/i6x.c
     ${CMAKE_CURRENT_LIST_DIR}/vt13/vt13.c
@@ -13,6 +15,7 @@ target_sources(${PROJECT_NAME} PRIVATE ${_module_sources})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/DR16
+    ${CMAKE_CURRENT_LIST_DIR}/dm_imu
     ${CMAKE_CURRENT_LIST_DIR}/game
     ${CMAKE_CURRENT_LIST_DIR}/I6X
     ${CMAKE_CURRENT_LIST_DIR}/vt13
