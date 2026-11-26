@@ -112,6 +112,20 @@ const osThreadAttr_t imu_attributes = {
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
+/* Definitions for imu_fdcan */
+osThreadId_t imu_fdcanHandle;
+const osThreadAttr_t imu_fdcan_attributes = {
+  .name = "imu_fdcan",
+  .stack_size = 1024 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for imu_rs485 */
+osThreadId_t imu_rs485Handle;
+const osThreadAttr_t imu_rs485_attributes = {
+  .name = "imu_rs485",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -127,6 +141,8 @@ void shoot_task(void *argument);
 void super_power_task(void *argument);
 void version_task(void *argument);
 void imu_task(void *argument);
+void imu_fdcan_task(void *argument);
+void imu_rs485_fdcan(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -212,6 +228,12 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of imu */
   imuHandle = osThreadNew(imu_task, NULL, &imu_attributes);
+
+  /* creation of imu_fdcan */
+  imu_fdcanHandle = osThreadNew(imu_fdcan_task, NULL, &imu_fdcan_attributes);
+
+  /* creation of imu_rs485 */
+  imu_rs485Handle = osThreadNew(imu_rs485_fdcan, NULL, &imu_rs485_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -383,6 +405,42 @@ __weak void imu_task(void *argument)
     osDelay(1);
   }
   /* USER CODE END imu_task */
+}
+
+/* USER CODE BEGIN Header_imu_fdcan_task */
+/**
+* @brief Function implementing the imu_fdcan thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_imu_fdcan_task */
+__weak void imu_fdcan_task(void *argument)
+{
+  /* USER CODE BEGIN imu_fdcan_task */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END imu_fdcan_task */
+}
+
+/* USER CODE BEGIN Header_imu_rs485_fdcan */
+/**
+* @brief Function implementing the imu_rs485 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_imu_rs485_fdcan */
+__weak void imu_rs485_fdcan(void *argument)
+{
+  /* USER CODE BEGIN imu_rs485_fdcan */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END imu_rs485_fdcan */
 }
 
 /* Private application code --------------------------------------------------*/
