@@ -2,6 +2,7 @@
 
 #include "game.h"
 
+#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -13,7 +14,9 @@
 
 CommuniCateTypeDef custom_robot_data;
 
-static BSP_UART_DMA_BUFFER(game_rx_dma_buff_, GAME_RX_DMA_BUF_SIZE);
+static alignas(32) uint8_t
+    game_rx_dma_buff_[BSP_UART_DMA_ALIGN_UP(GAME_RX_DMA_BUF_SIZE)]
+        BSP_UART_DMA_SECTION;
 static Game_t *instance_ = NULL;
 
 /**

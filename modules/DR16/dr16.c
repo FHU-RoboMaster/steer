@@ -1,12 +1,14 @@
 #include "dr16.h"
 
+#include <stdalign.h>
 #include <string.h>
 
 #include "comp_utils.h"
 
 // ==================== DMA 缓冲与对象状态 ====================
 
-static BSP_UART_DMA_BUFFER(dma_buffer_, DR16_FRAME_SIZE * 2U);
+static alignas(32) uint8_t
+    dma_buffer_[BSP_UART_DMA_ALIGN_UP(DR16_FRAME_SIZE * 2U)] BSP_UART_DMA_SECTION;
 static uint8_t dr16_rx_buffer_[DR16_FRAME_SIZE];
 static uint8_t dr16_frame_accumulator_[DR16_FRAME_SIZE];
 static size_t dr16_frame_accumulator_size_ = 0U;
