@@ -18,6 +18,8 @@ static alignas(32) uint8_t
     game_rx_dma_buff_[BSP_UART_DMA_ALIGN_UP(GAME_RX_DMA_BUF_SIZE)]
         BSP_UART_DMA_SECTION;
 static Game_t *instance_ = NULL;
+static uint32_t game_last_rx_error_count_ = 0U;
+static volatile bool game_stash_reset_pending_ = false;
 
 /**
  * @brief 计算遥控器数据帧的总长度
@@ -215,6 +217,14 @@ static void Game_RxCallback(uint8_t *data, size_t size)
     return;
   }
 
+  const uint32_t rx_err_count =
+      STM32UART_GetRxErrorCount(&instance_->uart_receive_);
+  if (rx_err_count != game_last_rx_error_count_) {
+    game_last_rx_error_count_ = rx_err_count;
+    instance_->rx_tail = instance_->rx_head;
+    game_stash_reset_pending_ = true;
+  }
+
   for (size_t i = 0U; i < size; ++i) {
     Game_PushRxByteFromISR(instance_, data[i]);
   }
@@ -389,6 +399,8 @@ err_t Game_Init(Game_t *self, UART_HandleTypeDef *uart_handle,
   }
 
   memset(self, 0, sizeof(*self));
+  game_last_rx_error_count_ = 0U;
+  game_stash_reset_pending_ = false;
   self->target = target;
   self->init_error_ = STM32UART_Init(
       &self->uart_receive_, uart_handle,
@@ -417,6 +429,8 @@ err_t Game_Start(Game_t *self)
   self->rx_tail = 0U;
   self->rx_fifo_overflowed = false;
   self->rx_fifo_overflow_count = 0U;
+  game_last_rx_error_count_ = STM32UART_GetRxErrorCount(&self->uart_receive_);
+  game_stash_reset_pending_ = false;
   Game_ResetStash(self);
 
   return STM32UART_SetRxDMA(&self->uart_receive_);
@@ -430,6 +444,14 @@ void Game_Update(Game_t *self, uint32_t timeout_ms)
   }
 
   xTaskNotifyWait(0U, GAME_SIGNAL_RAW_READY, NULL, pdMS_TO_TICKS(timeout_ms));
+
+  taskENTER_CRITICAL();
+  const bool reset_stash = game_stash_reset_pending_;
+  game_stash_reset_pending_ = false;
+  taskEXIT_CRITICAL();
+  if (reset_stash) {
+    Game_ResetStash(self);
+  }
 
   if (Game_ConsumeRxOverflow(self)) {
     Game_ClearRxFifo(self);
@@ -446,5 +468,17 @@ void Game_Update(Game_t *self, uint32_t timeout_ms)
   if (Game_ConsumeRxOverflow(self)) {
     Game_ClearRxFifo(self);
     Game_ResetStash(self);
+  }
+
+  /* 若 ISR 恢复因突发限流延后，则在任务上下文兜底重启接收。 */
+  if (STM32UART_GetLastError(&self->uart_receive_) != OK) {
+    taskENTER_CRITICAL();
+    self->rx_tail = self->rx_head;
+    self->rx_fifo_overflowed = false;
+    game_stash_reset_pending_ = false;
+    game_last_rx_error_count_ = STM32UART_GetRxErrorCount(&self->uart_receive_);
+    taskEXIT_CRITICAL();
+    Game_ResetStash(self);
+    (void)STM32UART_RestartRxDMA(&self->uart_receive_);
   }
 }

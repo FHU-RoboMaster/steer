@@ -265,6 +265,13 @@ static bool STM32_UART_IsDmaAccessible(const DMA_HandleTypeDef* hdma,
     return false;
   }
 
+#if defined(FLASH_BASE) && defined(FLASH_END)
+  /* UART DMA 缓冲（含 TX 写入与 RX 接收）均必须位于可写 SRAM，不能落在 Flash。 */
+  if ((start <= (uintptr_t)FLASH_END) && (end > (uintptr_t)FLASH_BASE)) {
+    return false;
+  }
+#endif
+
 #if defined(D1_DTCMRAM_BASE)
   /* STM32H7: ITCM (0x00000000..0x00010000) 和 DTCM (0x20000000..0x20020000)
    * 仅 CPU / MDMA 可访问，DMA1/DMA2/BDMA 均不可访问。 */
@@ -276,8 +283,14 @@ static bool STM32_UART_IsDmaAccessible(const DMA_HandleTypeDef* hdma,
   }
   if (STM32_UART_DMA_IsBDMA(hdma)) {
 #if defined(D3_SRAM_BASE)
-    /* BDMA 仅能访问 D3 域 SRAM4（RAM_D3）。 */
-    return (start >= D3_SRAM_BASE) && (end <= (D3_SRAM_BASE + 0x00010000UL));
+    /* BDMA 仅能访问 D3 域 SRAM4（RAM_D3）：H723/H725/H733/H735 为 16KB，其余 H7 为 64KB。 */
+#if defined(STM32H723xx) || defined(STM32H725xx) || defined(STM32H733xx) || \
+    defined(STM32H735xx)
+    const uintptr_t d3_sram_size = 0x00004000UL;
+#else
+    const uintptr_t d3_sram_size = 0x00010000UL;
+#endif
+    return (start >= D3_SRAM_BASE) && (end <= (D3_SRAM_BASE + d3_sram_size));
 #else
     return false;
 #endif
@@ -659,7 +672,9 @@ static bool STM32_UART_TryRestartRxInISR(STM32UART_t* self) {
       (self->dma_buff_rx_.size_ > UINT16_MAX) ||
       (hdma->Init.Mode != DMA_CIRCULAR) || !STM32_UART_DMA_IsCircular(hdma) ||
       !STM32_UART_IsDmaAccessible(hdma, self->dma_buff_rx_.addr_,
-                                  self->dma_buff_rx_.size_)) {
+                                  self->dma_buff_rx_.size_) ||
+      !STM32_UART_IsCacheLineAligned(self->dma_buff_rx_.addr_,
+                                     self->dma_buff_rx_.size_)) {
     return false;
   }
 
@@ -1355,7 +1370,13 @@ err_t STM32UARTFrameTx_GetLastError(const STM32UARTFrameTx_t* self) {
 //! 释放 busy 状态、切换 active buffer；如果另一块缓冲有 pending
 //! 数据则立即续发。
 void STM32UARTFrameTx_HandleTxComplete(STM32UARTFrameTx_t* self) {
-  if ((self == NULL) || !self->tx_busy_) {
+  if (self == NULL) {
+    return;
+  }
+
+  const uint32_t primask = STM32_UART_TX_Lock();
+  if (!self->tx_busy_) {
+    STM32_UART_TX_Unlock(primask);
     return;
   }
 
@@ -1365,9 +1386,11 @@ void STM32UARTFrameTx_HandleTxComplete(STM32UARTFrameTx_t* self) {
   if (self->pending_size_ > 0U) {
     (void)STM32UARTFrameTx_Flush(self);
   }
+  STM32UART_TxCompleteCallback_t callback = self->tx_callback_;
+  STM32_UART_TX_Unlock(primask);
 
-  if (self->tx_callback_ != NULL) {
-    self->tx_callback_();
+  if (callback != NULL) {
+    callback();
   }
 }
 
