@@ -1,6 +1,6 @@
 set(_module_sources
     ${CMAKE_CURRENT_LIST_DIR}/DR16/dr16.c
-    ${CMAKE_CURRENT_LIST_DIR}/dm_imu/imu_fdcan.c
+    # ${CMAKE_CURRENT_LIST_DIR}/dm_imu/imu_fdcan.c
     ${CMAKE_CURRENT_LIST_DIR}/dm_imu/imu_rs485.c
     ${CMAKE_CURRENT_LIST_DIR}/game/game.c
     ${CMAKE_CURRENT_LIST_DIR}/I6X/i6x.c

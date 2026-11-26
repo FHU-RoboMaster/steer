@@ -3,6 +3,7 @@ set(_task_sources
     # ${CMAKE_CURRENT_LIST_DIR}/vt13_task/vt13_task.c
     ${CMAKE_CURRENT_LIST_DIR}/game_task/game_task.c
     # ${CMAKE_CURRENT_LIST_DIR}/i6x_task/i6x_task.c
+    ${CMAKE_CURRENT_LIST_DIR}/imu_485_task/imu_485_task.c
     ${CMAKE_CURRENT_LIST_DIR}/chassis_task/chassis_task.c
     ${CMAKE_CURRENT_LIST_DIR}/gimbal_task/gimbal_task.c
      ${CMAKE_CURRENT_LIST_DIR}/shoot_task/shoot_task.c
@@ -15,6 +16,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     # ${CMAKE_CURRENT_LIST_DIR}/vt13_task
     ${CMAKE_CURRENT_LIST_DIR}/game_task
     # ${CMAKE_CURRENT_LIST_DIR}/i6x_task
+    ${CMAKE_CURRENT_LIST_DIR}/imu_485_task
     ${CMAKE_CURRENT_LIST_DIR}/chassis_task
     ${CMAKE_CURRENT_LIST_DIR}/gimbal_task
     ${CMAKE_CURRENT_LIST_DIR}/shoot_task

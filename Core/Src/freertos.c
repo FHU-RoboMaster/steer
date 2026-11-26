@@ -123,8 +123,8 @@ const osThreadAttr_t imu_fdcan_attributes = {
 osThreadId_t imu_rs485Handle;
 const osThreadAttr_t imu_rs485_attributes = {
   .name = "imu_rs485",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 1024 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -142,7 +142,7 @@ void super_power_task(void *argument);
 void version_task(void *argument);
 void imu_task(void *argument);
 void imu_fdcan_task(void *argument);
-void imu_rs485_fdcan(void *argument);
+void imu_485_task(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -233,7 +233,7 @@ void MX_FREERTOS_Init(void) {
   imu_fdcanHandle = osThreadNew(imu_fdcan_task, NULL, &imu_fdcan_attributes);
 
   /* creation of imu_rs485 */
-  imu_rs485Handle = osThreadNew(imu_rs485_fdcan, NULL, &imu_rs485_attributes);
+  imu_rs485Handle = osThreadNew(imu_485_task, NULL, &imu_rs485_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -425,22 +425,22 @@ __weak void imu_fdcan_task(void *argument)
   /* USER CODE END imu_fdcan_task */
 }
 
-/* USER CODE BEGIN Header_imu_rs485_fdcan */
+/* USER CODE BEGIN Header_imu_485_task */
 /**
 * @brief Function implementing the imu_rs485 thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_imu_rs485_fdcan */
-__weak void imu_rs485_fdcan(void *argument)
+/* USER CODE END Header_imu_485_task */
+__weak void imu_485_task(void *argument)
 {
-  /* USER CODE BEGIN imu_rs485_fdcan */
+  /* USER CODE BEGIN imu_485_task */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END imu_rs485_fdcan */
+  /* USER CODE END imu_485_task */
 }
 
 /* Private application code --------------------------------------------------*/
