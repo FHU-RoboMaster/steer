@@ -5,7 +5,7 @@
 #include "comp_utils.h"
 #include "task.h"
 
-void version_task(void* argument);
+void version_task(void* argument)
 {
   UNUSED(argument);
   for (;;) {

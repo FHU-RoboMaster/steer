@@ -249,7 +249,7 @@ err_t vt13_start_dma_recv(vt13_t *vt13) { return vt13_start(vt13); }
 
 bool vt13_wait_dma_cplt(uint32_t timeout) {
   uint32_t notify = 0;
-  return xTaskNotifyWait(SIGNAL_VT13_RAW_REDY, 0, &notify,
+  return xTaskNotifyWait(0U, SIGNAL_VT13_RAW_REDY, &notify,
                          pdMS_TO_TICKS(timeout)) == pdTRUE;
 }
 
