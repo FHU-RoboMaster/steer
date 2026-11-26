@@ -4,10 +4,10 @@
  *
  * 本文件是应用层唯一需要包含的 DJ 公共头。典型调用顺序：
  *
- * 1. STM32CAN_Init + 过滤器配置；
- * 2. dj_motor_bus_init(bus, can)（在 Start 前，占用 1 个 RX 订阅槽）；
+ * 1. STM32FDCAN_Init + 过滤器配置；
+ * 2. dj_motor_bus_init(bus, fdcan)（在 Start 前，占用 1 个 RX 订阅槽）；
  * 3. 多次 dj_motor_init(motor, bus, type, id, reversed)；
- * 4. STM32CAN_Start；
+ * 4. STM32FDCAN_Start；
  * 5. 周期：dj_motor_set_command →（写齐后自动发送）；
  * 6. 停机：dj_motor_zero_and_flush(bus, group)。
  *
@@ -27,16 +27,16 @@
 #include "dj_motor_drv.h"
 
 /**
- * @brief 初始化总线对象并订阅 CAN 接收回调。
+ * @brief 初始化总线对象并订阅 FDCAN 接收回调。
  * @param bus 调用方静态分配的总线对象。
- * @param can 已 Init 但通常尚未 Start 的 BSP CAN 设备。
- * @return OK 表示成功；bus 或 can 为 NULL 时返回 PTR_NULL；订阅失败时透传
- *         STM32CAN_SubscribeRx 错误码（如 STATE_ERR / FULL）。
+ * @param fdcan 已 Init 但通常尚未 Start 的 BSP FDCAN 设备。
+ * @return OK 表示成功；bus 或 fdcan 为 NULL 时返回 PTR_NULL；订阅失败时透传
+ *         STM32FDCAN_SubscribeRx 错误码（如 STATE_ERR / FULL）。
  *
- * 成功后 bus->initialized 为 true，三组控制组 ID 已写入。订阅失败会清零 bus，
- * 避免半初始化。须在 STM32CAN_Start() 之前调用。
+ * 成功后 bus->initialized 为 true，控制组 ID 已写入。订阅失败会清零 bus，
+ * 避免半初始化。须在 STM32FDCAN_Start() 之前调用。
  */
-err_t dj_motor_bus_init(dj_motor_bus_t *bus, STM32CAN_t *can);
+err_t dj_motor_bus_init(dj_motor_bus_t *bus, STM32FDCAN_t *fdcan);
 
 /**
  * @brief 初始化电机实例并注册到指定总线。

@@ -9,7 +9,7 @@
 
 #include "FreeRTOS.h"
 #include "comp_utils.h"
-#include "stm32f4xx.h"
+#include "stm32h7xx.h"
 #include "task.h"
 
 #if BSP_LOG_ENABLED
@@ -385,8 +385,8 @@ static err_t BSPLogTerminalSend(const bsp_log_event_t *event, va_list *args) {
   err_t end_result;
 
 #if BSP_LOG_TAG_ENABLED
-  written = SEGGER_RTT_printf(BSP_LOG_CHANNEL_TERMINAL, "%s[%s][%s] ",
-                              color, BSPLogLevelName(event->level), event->tag);
+  written = SEGGER_RTT_printf(BSP_LOG_CHANNEL_TERMINAL, "%s[%s][%s] ", color,
+                              BSPLogLevelName(event->level), event->tag);
 #else
   written = SEGGER_RTT_printf(BSP_LOG_CHANNEL_TERMINAL, "%s[%s] ", color,
                               BSPLogLevelName(event->level));

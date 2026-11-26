@@ -6,7 +6,7 @@
  * - 型号 + 设备 ID → 反馈 ID / 控制组 / 槽位；
  * - 命令限幅与 4 路 int16 大端打包；
  * - 8 字节反馈帧解码与物理量换算；
- * - 通过 STM32CAN_Send() 发送标准数据帧。
+ * - 通过 STM32FDCAN_SendStd() 发送标准数据帧。
  *
  * @note 本层不管理 group_mask / pending_mask，也不订阅 RX。
  *       拼包状态机与对象生命周期全部由 dj_motor_ctrl 负责。
@@ -99,14 +99,14 @@ float dj_motor_drv_rpm_to_rad_s(dj_motor_type_e type, int16_t rpm);
 
 /**
  * @brief 打包并发送指定控制组的 8 字节标准数据帧。
- * @param can 已初始化且可发送的 BSP CAN 设备。
+ * @param fdcan 已初始化且可发送的 BSP FDCAN 设备。
  * @param group 控制组 ID（0x200 / 0x1FF / 0x2FF）。
  * @param commands 四槽命令；未使用槽填 0。
- * @return STM32CAN_Send() 的返回值；参数非法时返回 PTR_NULL 或 ARG_ERR。
+ * @return STM32FDCAN_SendStd() 的返回值；参数非法时返回 PTR_NULL 或 ARG_ERR。
  *
- * 邮箱忙时返回 BUSY，不排队、不重试。调用方应在下一控制周期用最新命令重发。
+ * 硬件 TX FIFO 满时返回 BUSY，不排队、不重试。调用方应在下一控制周期用最新命令重发。
  */
-err_t dj_motor_drv_send_group(STM32CAN_t *can, dj_motor_group_e group,
+err_t dj_motor_drv_send_group(STM32FDCAN_t *fdcan, dj_motor_group_e group,
                               const int16_t commands[4]);
 
 /**

@@ -14,7 +14,7 @@
 #define VT13_SOF_1 (0xA9u)
 #define VT13_SOF_2 (0x53u)
 
-static uint8_t dma_buffer_[VT13_FRAME_SIZE * 2u];
+static BSP_UART_DMA_BUFFER(dma_buffer_, VT13_FRAME_SIZE * 2U);
 static uint8_t vt13_rx_buffer_[VT13_FRAME_SIZE];
 static uint8_t vt13_frame_accumulator_[VT13_FRAME_SIZE];
 static size_t vt13_frame_accumulator_size_ = 0U;

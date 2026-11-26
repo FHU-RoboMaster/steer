@@ -2,13 +2,12 @@
  * @file dm_motor_drv.h
  * @brief 达妙电机 CAN 协议发送与反馈解码接口。
  *
- * 本层负责把电机控制目标编码为达妙协议帧，并通过 bsp_can 提供的 STM32CAN_t
+ * 本层负责把电机控制目标编码为达妙协议帧，并通过 bsp_fdcan 提供的 STM32FDCAN_t
  * 设备发送；同时提供实时反馈解码、特殊命令帧以及寄存器读写命令。
  */
 #pragma once
 
-#include "bsp_can.h"
-#include "can.h"
+#include "bsp_fdcan.h"
 #include "convert.h"
 #include "dm_motor_def.h"
 #include "main.h"
@@ -65,23 +64,23 @@ typedef enum {
  * @brief 按 motor->ctrl.mode 发送一次控制命令。
  * @param hcan 已初始化并可发送的 BSP CAN 设备。
  * @param motor 电机对象，提供命令 ID、映射范围和控制目标。
- * @note 底层发送结果不会通过本接口返回；需要诊断发送失败时应检查 bsp_can 状态。
+ * @note 底层发送结果不会通过本接口返回；需要诊断发送失败时应检查 bsp_fdcan 状态。
  */
-void dm_motor_ctrl_send(STM32CAN_t *hcan, motor_t *motor);
+void dm_motor_ctrl_send(STM32FDCAN_t *hfdcan, motor_t *motor);
 
 /**
  * @brief 按当前控制模式向电机发送使能特殊帧。
  * @param hcan 已初始化的 BSP CAN 设备。
  * @param motor 待使能电机对象。
  */
-void dm_motor_enable(STM32CAN_t *hcan, motor_t *motor);
+void dm_motor_enable(STM32FDCAN_t *hfdcan, motor_t *motor);
 
 /**
  * @brief 按当前控制模式向电机发送失能特殊帧。
  * @param hcan 已初始化的 BSP CAN 设备。
  * @param motor 待失能电机对象。
  */
-void dm_motor_disable(STM32CAN_t *hcan, motor_t *motor);
+void dm_motor_disable(STM32FDCAN_t *hfdcan, motor_t *motor);
 
 /**
  * @brief 清零电机对象中的控制目标和增益。
@@ -95,7 +94,7 @@ void dm_motor_clear_para(motor_t *motor);
  * @param hcan 已初始化的 BSP CAN 设备。
  * @param motor 待清除错误的电机对象。
  */
-void dm_motor_clear_err(STM32CAN_t *hcan, motor_t *motor);
+void dm_motor_clear_err(STM32FDCAN_t *hfdcan, motor_t *motor);
 
 /**
  * @brief 解码一帧电机实时反馈并更新 motor->para。
@@ -110,7 +109,7 @@ void dm_motor_fbdata(motor_t *motor, const uint8_t *rx_data);
  * @param motor_id 电机基础标准帧 ID。
  * @param mode_id 控制模式 ID 偏移量，取 MIT_MODE、POS_MODE、SPD_MODE 或 PSI_MODE。
  */
-void enable_motor_mode(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
+void enable_motor_mode(STM32FDCAN_t *hfdcan, uint16_t motor_id, uint16_t mode_id);
 
 /**
  * @brief 向指定控制模式的 CAN ID 发送电机失能特殊帧。
@@ -118,7 +117,7 @@ void enable_motor_mode(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
  * @param motor_id 电机基础标准帧 ID。
  * @param mode_id 控制模式 ID 偏移量。
  */
-void disable_motor_mode(STM32CAN_t *hcan, uint16_t motor_id,
+void disable_motor_mode(STM32FDCAN_t *hfdcan, uint16_t motor_id,
                         uint16_t mode_id);
 
 /**
@@ -132,7 +131,7 @@ void disable_motor_mode(STM32CAN_t *hcan, uint16_t motor_id,
  * @param kd 速度微分增益。
  * @param tor 前馈扭矩，单位 N·m。
  */
-void mit_ctrl(STM32CAN_t *hcan, motor_t *motor, uint16_t motor_id, float pos,
+void mit_ctrl(STM32FDCAN_t *hfdcan, motor_t *motor, uint16_t motor_id, float pos,
               float vel, float kp, float kd, float tor);
 
 /**
@@ -142,7 +141,7 @@ void mit_ctrl(STM32CAN_t *hcan, motor_t *motor, uint16_t motor_id, float pos,
  * @param pos 目标位置，单位 rad，以 32 bit IEEE 754 原始字节发送。
  * @param vel 目标速度，单位 rad/s，以 32 bit IEEE 754 原始字节发送。
  */
-void pos_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float pos, float vel);
+void pos_ctrl(STM32FDCAN_t *hfdcan, uint16_t motor_id, float pos, float vel);
 
 /**
  * @brief 编码并发送纯速度控制帧。
@@ -150,7 +149,7 @@ void pos_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float pos, float vel);
  * @param motor_id 电机基础标准帧 ID。
  * @param vel 目标速度，单位 rad/s，以 32 bit IEEE 754 原始字节发送。
  */
-void spd_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float vel);
+void spd_ctrl(STM32FDCAN_t *hfdcan, uint16_t motor_id, float vel);
 
 /**
  * @brief 编码并发送位置-速度-电流控制帧。
@@ -160,7 +159,7 @@ void spd_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float vel);
  * @param vel 目标速度，单位 rad/s，协议发送值为 vel × 100。
  * @param cur 目标电流，单位 A，协议发送值为 cur × 10000。
  */
-void psi_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float pos, float vel,
+void psi_ctrl(STM32FDCAN_t *hfdcan, uint16_t motor_id, float pos, float vel,
               float cur);
 
 /**
@@ -169,7 +168,7 @@ void psi_ctrl(STM32CAN_t *hcan, uint16_t motor_id, float pos, float vel,
  * @param motor_id 电机基础标准帧 ID。
  * @param mode_id 控制模式 ID 偏移量。
  */
-void save_pos_zero(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
+void save_pos_zero(STM32FDCAN_t *hfdcan, uint16_t motor_id, uint16_t mode_id);
 
 /**
  * @brief 向指定控制模式发送清除错误特殊帧。
@@ -177,7 +176,7 @@ void save_pos_zero(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
  * @param motor_id 电机基础标准帧 ID。
  * @param mode_id 控制模式 ID 偏移量。
  */
-void clear_err(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
+void clear_err(STM32FDCAN_t *hfdcan, uint16_t motor_id, uint16_t mode_id);
 
 /**
  * @brief 通过参数命令 ID 0x7FF 请求读取一个电机寄存器。
@@ -185,14 +184,14 @@ void clear_err(STM32CAN_t *hcan, uint16_t motor_id, uint16_t mode_id);
  * @param id 目标电机的 11 bit 标准帧 ID。
  * @param rid 待读取的寄存器编号。
  */
-void read_motor_data(STM32CAN_t *hcan, uint16_t id, uint8_t rid);
+void read_motor_data(STM32FDCAN_t *hfdcan, uint16_t id, uint8_t rid);
 
 /**
  * @brief 请求电机回传当前控制状态。
  * @param hcan 已初始化的 BSP CAN 设备。
  * @param id 目标电机的 11 bit 标准帧 ID。
  */
-void read_motor_ctrl_fbdata(STM32CAN_t *hcan, uint16_t id);
+void read_motor_ctrl_fbdata(STM32FDCAN_t *hfdcan, uint16_t id);
 
 /**
  * @brief 通过参数命令 ID 0x7FF 写入一个 32 bit 寄存器值。
@@ -204,7 +203,7 @@ void read_motor_ctrl_fbdata(STM32CAN_t *hcan, uint16_t id);
  * @param d2 32 bit 值的次高字节。
  * @param d3 32 bit 值的最高有效字节。
  */
-void write_motor_data(STM32CAN_t *hcan, uint16_t id, uint8_t rid, uint8_t d0,
+void write_motor_data(STM32FDCAN_t *hfdcan, uint16_t id, uint8_t rid, uint8_t d0,
                       uint8_t d1, uint8_t d2, uint8_t d3);
 
 /**
@@ -213,4 +212,4 @@ void write_motor_data(STM32CAN_t *hcan, uint16_t id, uint8_t rid, uint8_t d0,
  * @param id 目标电机的 11 bit 标准帧 ID。
  * @param rid 为保持接口一致而保留的参数；当前协议帧固定发送保存选择值 0x01。
  */
-void save_motor_data(STM32CAN_t *hcan, uint16_t id, uint8_t rid);
+void save_motor_data(STM32FDCAN_t *hfdcan, uint16_t id, uint8_t rid);

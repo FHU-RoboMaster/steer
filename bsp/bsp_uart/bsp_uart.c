@@ -29,6 +29,17 @@ static STM32UARTFrameTx_t* stm32_uart_frame_tx_map[BSP_UART_NUMBER] = {0};
 static STM32UARTDoubleBufTx_t* stm32_uart_double_buf_tx_map[BSP_UART_NUMBER] = {
     0};
 
+#if BSP_UART_DMA_FALLBACK_ENABLE
+//! H7 兼容旧模块回退缓冲：位于 .axi_ram 且按 32 字节对齐。
+//! 当调用方把 RX/FrameTx 缓冲放在 DTCMRAM 或未按 Cache line 对齐时自动回退使用。
+static uint8_t stm32_uart_rx_fallback_buf
+    [BSP_UART_NUMBER][BSP_UART_DMA_ALIGN_UP(BSP_UART_DMA_FALLBACK_RX_SIZE)]
+    BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION;
+static uint8_t stm32_uart_tx_fallback_buf
+    [BSP_UART_NUMBER][2U][BSP_UART_DMA_ALIGN_UP(BSP_UART_DMA_FALLBACK_TX_SIZE)]
+    BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION;
+#endif
+
 //! RX 突发错误冷却恢复定时器（静态分配，避免 ISR 连续出错时风暴抢占 CPU）。
 static StaticTimer_t rx_recovery_timer_buf;
 static TimerHandle_t rx_recovery_timer = NULL;
@@ -36,6 +47,282 @@ static atomic_uint rx_recovery_timer_state = 0U; /* 0=未创建 1=创建中 2=�
 static atomic_bool rx_recovery_timer_armed = false;
 
 static void STM32_UART_RxRecoveryTimerCallback(TimerHandle_t xTimer);
+
+// ==================== D-Cache 与 F4/H7 硬件适配工具 ====================
+
+static inline bool STM32_UART_IsDCacheEnabled(void) {
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+  return (SCB->CCR & SCB_CCR_DC_Msk) != 0U;
+#else
+  return false;
+#endif
+}
+
+//! 将指定地址区间覆盖的 D-Cache cache line 刷回内存（TX DMA 启动前调用）。
+static inline void STM32_UART_CleanDCacheByAddr(const void* addr, size_t size) {
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+  if ((addr == NULL) || (size == 0U) || !STM32_UART_IsDCacheEnabled()) {
+    return;
+  }
+  const uintptr_t line_mask = (uintptr_t)(BSP_UART_DCACHE_LINE_SIZE - 1U);
+  const uintptr_t start = ((uintptr_t)addr) & ~line_mask;
+  const uintptr_t end = (((uintptr_t)addr) + size + line_mask) & ~line_mask;
+  if (end > start) {
+    SCB_CleanDCache_by_Addr((uint32_t*)start, (int32_t)(end - start));
+  }
+#else
+  RM_UNUSED(addr);
+  RM_UNUSED(size);
+#endif
+}
+
+//! 使指定地址区间覆盖的 D-Cache cache line 失效（RX DMA 读取前调用）。
+static inline void STM32_UART_InvalidateDCacheByAddr(void* addr, size_t size) {
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+  if ((addr == NULL) || (size == 0U) || !STM32_UART_IsDCacheEnabled()) {
+    return;
+  }
+  const uintptr_t line_mask = (uintptr_t)(BSP_UART_DCACHE_LINE_SIZE - 1U);
+  const uintptr_t start = ((uintptr_t)addr) & ~line_mask;
+  const uintptr_t end = (((uintptr_t)addr) + size + line_mask) & ~line_mask;
+  if (end > start) {
+    SCB_InvalidateDCache_by_Addr((uint32_t*)start, (int32_t)(end - start));
+  }
+#else
+  RM_UNUSED(addr);
+  RM_UNUSED(size);
+#endif
+}
+
+//! 返回 UART 发送数据寄存器地址（H7 为 TDR，F4 为 DR）。
+static inline volatile uint32_t* STM32_UART_TxDataReg(
+    UART_HandleTypeDef* huart) {
+#if defined(USART_TDR_TDR)
+  return &huart->Instance->TDR;
+#else
+  return &huart->Instance->DR;
+#endif
+}
+
+//! 清除 UART 残留的 RX 错误与空闲标志（H7 通过 ICR 清除，F4 读 SR+DR）。
+static inline void STM32_UART_ClearRxFlags(UART_HandleTypeDef* huart) {
+#if defined(UART_CLEAR_OREF)
+  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_PEF | UART_CLEAR_FEF |
+                                   UART_CLEAR_NEF | UART_CLEAR_OREF |
+                                   UART_CLEAR_IDLEF);
+#else
+  __HAL_UART_CLEAR_OREFLAG(huart);
+#endif
+}
+
+//! 清除 UART TC 标志（H7 使用 UART_CLEAR_TCF，F4 使用 UART_FLAG_TC）。
+static inline void STM32_UART_ClearTcFlag(UART_HandleTypeDef* huart) {
+#if defined(UART_CLEAR_TCF)
+  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_TCF);
+#else
+  __HAL_UART_CLEAR_FLAG(huart, UART_FLAG_TC);
+#endif
+}
+
+//! 关闭 UART RX 侧错误/空闲中断与 DMA 接收请求。
+static inline void STM32_UART_ClearRxInterrupts(UART_HandleTypeDef* huart) {
+  CLEAR_BIT(huart->Instance->CR1,
+            USART_CR1_RXNEIE | USART_CR1_PEIE | USART_CR1_IDLEIE);
+#ifdef USART_CR3_RXFTIE
+  CLEAR_BIT(huart->Instance->CR3,
+            USART_CR3_EIE | USART_CR3_DMAR | USART_CR3_RXFTIE);
+#else
+  CLEAR_BIT(huart->Instance->CR3, USART_CR3_EIE | USART_CR3_DMAR);
+#endif
+}
+
+//! 判断当前 DMA 句柄是否绑定到 H7 BDMA 通道。
+static inline bool STM32_UART_DMA_IsBDMA(const DMA_HandleTypeDef* hdma) {
+#if defined(IS_BDMA_CHANNEL_INSTANCE)
+  return (hdma != NULL) && (hdma->Instance != NULL) &&
+         IS_BDMA_CHANNEL_INSTANCE(hdma->Instance);
+#else
+  RM_UNUSED(hdma);
+  return false;
+#endif
+}
+
+//! 判断 DMA 流/通道硬件使能位是否置位（兼容 F4 DMA_Stream 和 H7 DMA/BDMA）。
+static inline bool STM32_UART_DMA_IsEnabled(const DMA_HandleTypeDef* hdma) {
+  if ((hdma == NULL) || (hdma->Instance == NULL)) {
+    return false;
+  }
+#if defined(IS_DMA_STREAM_INSTANCE) && defined(BDMA_CCR_EN)
+  if (IS_DMA_STREAM_INSTANCE(hdma->Instance)) {
+    return (((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_EN) != 0U;
+  }
+  return (((BDMA_Channel_TypeDef*)hdma->Instance)->CCR & BDMA_CCR_EN) != 0U;
+#else
+  return (((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_EN) != 0U;
+#endif
+}
+
+//! 判断 DMA 流/通道硬件循环模式位是否置位。
+static inline bool STM32_UART_DMA_IsCircular(const DMA_HandleTypeDef* hdma) {
+  if ((hdma == NULL) || (hdma->Instance == NULL)) {
+    return false;
+  }
+#if defined(IS_DMA_STREAM_INSTANCE) && defined(BDMA_CCR_CIRC)
+  if (IS_DMA_STREAM_INSTANCE(hdma->Instance)) {
+    return (((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_CIRC) != 0U;
+  }
+  return (((BDMA_Channel_TypeDef*)hdma->Instance)->CCR & BDMA_CCR_CIRC) != 0U;
+#else
+  return (((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_CIRC) != 0U;
+#endif
+}
+
+//! 读取硬件双缓冲当前目标页（0 表示 M0，1 表示 M1）。
+static inline uint8_t STM32_UART_DMA_GetCurrentTarget(
+    const DMA_HandleTypeDef* hdma) {
+#if defined(IS_DMA_STREAM_INSTANCE) && defined(BDMA_CCR_CT)
+  if (IS_DMA_STREAM_INSTANCE(hdma->Instance)) {
+    return ((((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_CT) == 0U)
+               ? 0U
+               : 1U;
+  }
+  return ((((BDMA_Channel_TypeDef*)hdma->Instance)->CCR & BDMA_CCR_CT) == 0U)
+             ? 0U
+             : 1U;
+#else
+  return ((((DMA_Stream_TypeDef*)hdma->Instance)->CR & DMA_SxCR_CT) == 0U) ? 0U
+                                                                           : 1U;
+#endif
+}
+
+//! 清除硬件双缓冲当前目标页标志，使下次启动从 M0 开始。
+static inline void STM32_UART_DMA_ClearCurrentTarget(DMA_HandleTypeDef* hdma) {
+#if defined(IS_DMA_STREAM_INSTANCE) && defined(BDMA_CCR_CT)
+  if (IS_DMA_STREAM_INSTANCE(hdma->Instance)) {
+    CLEAR_BIT(((DMA_Stream_TypeDef*)hdma->Instance)->CR, DMA_SxCR_CT);
+  } else {
+    CLEAR_BIT(((BDMA_Channel_TypeDef*)hdma->Instance)->CCR, BDMA_CCR_CT);
+  }
+#else
+  CLEAR_BIT(((DMA_Stream_TypeDef*)hdma->Instance)->CR, DMA_SxCR_CT);
+#endif
+}
+
+//! 关闭指定 DMA 流/通道的全部中断。
+static inline void STM32_UART_DMA_DisableAllIT(DMA_HandleTypeDef* hdma) {
+  __HAL_DMA_DISABLE_IT(hdma, DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
+  if (!STM32_UART_DMA_IsBDMA(hdma)) {
+    __HAL_DMA_DISABLE_IT(hdma, DMA_IT_FE);
+  }
+}
+
+//! 配置硬件双缓冲寄存器（兼容 DMA Stream 与 H7 BDMA Channel）。
+static inline void STM32_UART_DMA_ConfigDoubleBuffer(DMA_HandleTypeDef* hdma,
+                                                     uint32_t periph_addr,
+                                                     uint32_t m0_addr,
+                                                     uint32_t m1_addr,
+                                                     uint32_t length) {
+#if defined(IS_DMA_STREAM_INSTANCE) && defined(BDMA_CCR_DBM)
+  if (IS_DMA_STREAM_INSTANCE(hdma->Instance)) {
+    DMA_Stream_TypeDef* stream = (DMA_Stream_TypeDef*)hdma->Instance;
+    CLEAR_BIT(stream->CR, DMA_SxCR_CT | DMA_SxCR_PFCTRL);
+    SET_BIT(stream->CR, DMA_SxCR_DBM);
+    stream->PAR = periph_addr;
+    stream->M0AR = m0_addr;
+    stream->M1AR = m1_addr;
+    stream->NDTR = length;
+  } else {
+    BDMA_Channel_TypeDef* channel = (BDMA_Channel_TypeDef*)hdma->Instance;
+    CLEAR_BIT(channel->CCR, BDMA_CCR_CT);
+    SET_BIT(channel->CCR, BDMA_CCR_DBM);
+    channel->CPAR = periph_addr;
+    channel->CM0AR = m0_addr;
+    channel->CM1AR = m1_addr;
+    channel->CNDTR = length;
+  }
+#else
+  DMA_Stream_TypeDef* stream = (DMA_Stream_TypeDef*)hdma->Instance;
+  CLEAR_BIT(stream->CR, DMA_SxCR_CT | DMA_SxCR_PFCTRL);
+  SET_BIT(stream->CR, DMA_SxCR_DBM);
+  stream->PAR = periph_addr;
+  stream->M0AR = m0_addr;
+  stream->M1AR = m1_addr;
+  stream->NDTR = length;
+#endif
+}
+
+//! 检查缓冲区是否位于当前 DMA 控制器可访问的内存区域。
+static bool STM32_UART_IsDmaAccessible(const DMA_HandleTypeDef* hdma,
+                                       const void* addr, size_t size) {
+  if ((addr == NULL) || (size == 0U)) {
+    return false;
+  }
+
+  const uintptr_t start = (uintptr_t)addr;
+  const uintptr_t end = start + size;
+  if (end < start) {
+    return false;
+  }
+
+#if defined(D1_DTCMRAM_BASE)
+  /* STM32H7: ITCM (0x00000000..0x00010000) 和 DTCM (0x20000000..0x20020000)
+   * 仅 CPU / MDMA 可访问，DMA1/DMA2/BDMA 均不可访问。 */
+  if (start < 0x00010000UL) {
+    return false;
+  }
+  if ((start < (D1_DTCMRAM_BASE + 0x00020000UL)) && (end > D1_DTCMRAM_BASE)) {
+    return false;
+  }
+  if (STM32_UART_DMA_IsBDMA(hdma)) {
+#if defined(D3_SRAM_BASE)
+    /* BDMA 仅能访问 D3 域 SRAM4（RAM_D3）。 */
+    return (start >= D3_SRAM_BASE) && (end <= (D3_SRAM_BASE + 0x00010000UL));
+#else
+    return false;
+#endif
+  }
+#elif defined(CCMDATARAM_BASE)
+  RM_UNUSED(hdma);
+  /* STM32F4: CCMRAM (0x10000000..0x10010000) 仅 CPU 可访问，DMA 不可访问。 */
+  if ((start < (CCMDATARAM_BASE + 0x00010000UL)) && (end > CCMDATARAM_BASE)) {
+    return false;
+  }
+#else
+  RM_UNUSED(hdma);
+#endif
+  return true;
+}
+
+//! 检查 RX DMA 缓冲区首地址和长度是否均按 D-Cache line（32 字节）对齐。
+//! 避免 InvalidateDCache 误清同 cache line 内的相邻变量。
+static bool STM32_UART_IsCacheLineAligned(const void* addr, size_t size) {
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+  const uintptr_t line_mask = (uintptr_t)(BSP_UART_DCACHE_LINE_SIZE - 1U);
+  return ((((uintptr_t)addr) & line_mask) == 0U) && ((size & line_mask) == 0U);
+#else
+  RM_UNUSED(addr);
+  RM_UNUSED(size);
+  return true;
+#endif
+}
+
+//! 检查两块 TX 缓冲在 D-Cache 平台上是否均按 32 字节对齐且不共享 cache line。
+static bool STM32_UART_TxBuffersCacheSeparated(BSP_UART_RawData_t buf0,
+                                               BSP_UART_RawData_t buf1) {
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+  const uintptr_t line_mask = (uintptr_t)(BSP_UART_DCACHE_LINE_SIZE - 1U);
+  const uintptr_t addr0 = (uintptr_t)buf0.addr_;
+  const uintptr_t addr1 = (uintptr_t)buf1.addr_;
+  const uintptr_t distance =
+      (addr0 < addr1) ? (addr1 - addr0) : (addr0 - addr1);
+  return ((addr0 & line_mask) == 0U) && ((addr1 & line_mask) == 0U) &&
+         (distance >= BSP_UART_DMA_ALIGN_UP(buf0.size_));
+#else
+  RM_UNUSED(buf0);
+  RM_UNUSED(buf1);
+  return true;
+#endif
+}
 
 //! TX 状态同时被任务和 DMA ISR 使用；保存 PRIMASK，兼容嵌套临界区。
 static uint32_t STM32_UART_TX_Lock(void) {
@@ -80,9 +367,54 @@ BSP_UART_t BSP_UART_get_id(USART_TypeDef* addr) {
     return BSP_USART3;
   }
 #endif
+#ifdef USART4
+  if (addr == USART4) {
+    return BSP_USART4;
+  }
+#endif
+#ifdef USART5
+  if (addr == USART5) {
+    return BSP_USART5;
+  }
+#endif
 #ifdef USART6
   if (addr == USART6) {
     return BSP_USART6;
+  }
+#endif
+#ifdef USART7
+  if (addr == USART7) {
+    return BSP_USART7;
+  }
+#endif
+#ifdef USART8
+  if (addr == USART8) {
+    return BSP_USART8;
+  }
+#endif
+#ifdef USART9
+  if (addr == USART9) {
+    return BSP_USART9;
+  }
+#endif
+#ifdef USART10
+  if (addr == USART10) {
+    return BSP_USART10;
+  }
+#endif
+#ifdef UART1
+  if (addr == UART1) {
+    return BSP_UART1;
+  }
+#endif
+#ifdef UART2
+  if (addr == UART2) {
+    return BSP_UART2;
+  }
+#endif
+#ifdef UART3
+  if (addr == UART3) {
+    return BSP_UART3;
   }
 #endif
 #ifdef UART4
@@ -93,6 +425,46 @@ BSP_UART_t BSP_UART_get_id(USART_TypeDef* addr) {
 #ifdef UART5
   if (addr == UART5) {
     return BSP_UART5;
+  }
+#endif
+#ifdef UART6
+  if (addr == UART6) {
+    return BSP_UART6;
+  }
+#endif
+#ifdef UART7
+  if (addr == UART7) {
+    return BSP_UART7;
+  }
+#endif
+#ifdef UART8
+  if (addr == UART8) {
+    return BSP_UART8;
+  }
+#endif
+#ifdef UART9
+  if (addr == UART9) {
+    return BSP_UART9;
+  }
+#endif
+#ifdef UART10
+  if (addr == UART10) {
+    return BSP_UART10;
+  }
+#endif
+#ifdef LPUART1
+  if (addr == LPUART1) {
+    return BSP_LPUART1;
+  }
+#endif
+#ifdef LPUART2
+  if (addr == LPUART2) {
+    return BSP_LPUART2;
+  }
+#endif
+#ifdef LPUART3
+  if (addr == LPUART3) {
+    return BSP_LPUART3;
   }
 #endif
 
@@ -171,10 +543,43 @@ err_t STM32UART_Init(STM32UART_t* self, UART_HandleTypeDef* uart_handle,
     return self->last_error_;
   }
 
+  const bool rx_buf_ok =
+      STM32_UART_IsDmaAccessible(self->uart_handle_->hdmarx,
+                                 self->dma_buff_rx_.addr_,
+                                 self->dma_buff_rx_.size_) &&
+      STM32_UART_IsCacheLineAligned(self->dma_buff_rx_.addr_,
+                                    self->dma_buff_rx_.size_);
+  if (!rx_buf_ok) {
+#if BSP_UART_DMA_FALLBACK_ENABLE
+    if (!STM32_UART_DMA_IsBDMA(self->uart_handle_->hdmarx)) {
+      const size_t fallback_cap = sizeof(stm32_uart_rx_fallback_buf[0]);
+      size_t fallback_size = BSP_UART_DMA_ALIGN_UP(self->dma_buff_rx_.size_);
+      if (fallback_size > fallback_cap) {
+        fallback_size = fallback_cap;
+      }
+      self->dma_buff_rx_.addr_ = stm32_uart_rx_fallback_buf[self->id_];
+      self->dma_buff_rx_.size_ = fallback_size;
+      LOG_WARN("UART",
+               "串口逻辑编号=%u 的RX缓冲不满足DMA/Cache要求，已切换至.axi_ram"
+               "回退缓冲(%u字节)",
+               (unsigned)self->id_, (unsigned)fallback_size);
+    } else {
+      self->last_error_ = ARG_ERR;
+      LOG_ERROR("UART",
+                "接收初始化失败：BDMA缓冲必须位于.ram_d3且按32字节对齐");
+      return self->last_error_;
+    }
+#else
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART", "接收初始化失败：DMA缓冲区地址或Cache对齐无效");
+    return self->last_error_;
+#endif
+  }
+
   stm32_uart_map[self->id_] = self;
   self->last_error_ = OK;
-  LOG_DEBUG("UART", "接收初始化完成 串口逻辑编号=%u 缓冲区=%u字节", (unsigned)self->id_,
-           (unsigned)self->dma_buff_rx_.size_);
+  LOG_DEBUG("UART", "接收初始化完成 串口逻辑编号=%u 缓冲区=%u字节",
+            (unsigned)self->id_, (unsigned)self->dma_buff_rx_.size_);
   return self->last_error_;
 }
 
@@ -251,17 +656,17 @@ static bool STM32_UART_TryRestartRxInISR(STM32UART_t* self) {
   if ((hdma == NULL) || (hdma->Instance == NULL) ||
       (self->dma_buff_rx_.addr_ == NULL) || (self->dma_buff_rx_.size_ == 0U) ||
       (self->dma_buff_rx_.size_ > UINT16_MAX) ||
-      (hdma->Init.Mode != DMA_CIRCULAR) ||
-      ((hdma->Instance->CR & DMA_SxCR_CIRC) == 0U)) {
+      (hdma->Init.Mode != DMA_CIRCULAR) || !STM32_UART_DMA_IsCircular(hdma) ||
+      !STM32_UART_IsDmaAccessible(hdma, self->dma_buff_rx_.addr_,
+                                  self->dma_buff_rx_.size_)) {
     return false;
   }
 
-  if ((hdma->Instance->CR & DMA_SxCR_EN) != 0U) {
+  if (STM32_UART_DMA_IsEnabled(hdma)) {
     CLEAR_BIT(huart->Instance->CR3, USART_CR3_DMAR);
-    __HAL_DMA_DISABLE_IT(hdma, DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
-    __HAL_DMA_DISABLE_IT(hdma, DMA_IT_FE);
+    STM32_UART_DMA_DisableAllIT(hdma);
     __HAL_DMA_DISABLE(hdma);
-    if ((hdma->Instance->CR & DMA_SxCR_EN) != 0U) {
+    if (STM32_UART_DMA_IsEnabled(hdma)) {
       return false;
     }
   }
@@ -271,31 +676,28 @@ static bool STM32_UART_TryRestartRxInISR(STM32UART_t* self) {
   hdma->State = HAL_DMA_STATE_READY;
   __HAL_UNLOCK(hdma);
 
-  CLEAR_BIT(huart->Instance->CR1,
-            USART_CR1_RXNEIE | USART_CR1_PEIE | USART_CR1_IDLEIE);
-  CLEAR_BIT(huart->Instance->CR3, USART_CR3_EIE | USART_CR3_DMAR);
+  STM32_UART_ClearRxInterrupts(huart);
   huart->RxState = HAL_UART_STATE_READY;
   huart->ReceptionType = HAL_UART_RECEPTION_STANDARD;
   huart->ErrorCode = HAL_UART_ERROR_NONE;
-  __HAL_UART_CLEAR_OREFLAG(huart);
+  STM32_UART_ClearRxFlags(huart);
 
   self->last_rx_pos_ = 0U;
   self->rx_restart_pending_ = false;
   self->last_error_ = OK;
+
+  STM32_UART_InvalidateDCacheByAddr(self->dma_buff_rx_.addr_,
+                                    self->dma_buff_rx_.size_);
 
   const HAL_StatusTypeDef rx_status = HAL_UARTEx_ReceiveToIdle_DMA(
       huart, (uint8_t*)self->dma_buff_rx_.addr_,
       (uint16_t)self->dma_buff_rx_.size_);
   if ((rx_status != HAL_OK) || (huart->RxState != HAL_UART_STATE_BUSY_RX) ||
       ((huart->Instance->CR3 & USART_CR3_DMAR) == 0U)) {
-    CLEAR_BIT(huart->Instance->CR1,
-              USART_CR1_RXNEIE | USART_CR1_PEIE | USART_CR1_IDLEIE);
-    CLEAR_BIT(huart->Instance->CR3, USART_CR3_EIE | USART_CR3_DMAR);
+    STM32_UART_ClearRxInterrupts(huart);
     if ((hdma->State != HAL_DMA_STATE_ABORT) &&
-        ((hdma->Instance->CR & DMA_SxCR_EN) != 0U)) {
-      __HAL_DMA_DISABLE_IT(hdma,
-                           DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
-      __HAL_DMA_DISABLE_IT(hdma, DMA_IT_FE);
+        STM32_UART_DMA_IsEnabled(hdma)) {
+      STM32_UART_DMA_DisableAllIT(hdma);
       __HAL_DMA_DISABLE(hdma);
     }
     huart->RxState = HAL_UART_STATE_READY;
@@ -349,10 +751,20 @@ err_t STM32UART_SetRxDMA(STM32UART_t* self) {
     return self->last_error_;
   }
 
+  if (!STM32_UART_IsDmaAccessible(self->uart_handle_->hdmarx,
+                                  self->dma_buff_rx_.addr_,
+                                  self->dma_buff_rx_.size_) ||
+      !STM32_UART_IsCacheLineAligned(self->dma_buff_rx_.addr_,
+                                     self->dma_buff_rx_.size_)) {
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART", "接收DMA配置失败：缓冲区地址或Cache对齐无效");
+    return self->last_error_;
+  }
+
   STM32_UART_EnsureRxRecoveryTimer();
 
   if ((self->uart_handle_->RxState != HAL_UART_STATE_READY) ||
-      ((self->uart_handle_->hdmarx->Instance->CR & DMA_SxCR_EN) != 0U)) {
+      STM32_UART_DMA_IsEnabled(self->uart_handle_->hdmarx)) {
     self->last_error_ = BUSY;
     return self->last_error_;
   }
@@ -366,7 +778,11 @@ err_t STM32UART_SetRxDMA(STM32UART_t* self) {
   }
 
   /* 清除残留错误/空闲标志，防止启动瞬间被旧标志触发中断。 */
-  __HAL_UART_CLEAR_OREFLAG(self->uart_handle_);
+  STM32_UART_ClearRxFlags(self->uart_handle_);
+
+  /* 启动前使 RX 缓冲对应的 D-Cache 失效，避免旧脏行回写覆盖 DMA 新数据。 */
+  STM32_UART_InvalidateDCacheByAddr(self->dma_buff_rx_.addr_,
+                                    self->dma_buff_rx_.size_);
 
   const bool was_enabled = self->rx_enabled_;
   const uint32_t primask = STM32_UART_TX_Lock();
@@ -428,13 +844,13 @@ err_t STM32UART_RestartRxDMA(STM32UART_t* self) {
     if (huart->hdmarx->State == HAL_DMA_STATE_BUSY) {
       (void)HAL_DMA_Abort(huart->hdmarx);
     }
-    if ((huart->hdmarx->Instance->CR & DMA_SxCR_EN) == 0U) {
+    if (!STM32_UART_DMA_IsEnabled(huart->hdmarx)) {
       huart->hdmarx->State = HAL_DMA_STATE_READY;
       __HAL_UNLOCK(huart->hdmarx);
     }
   }
 
-  __HAL_UART_CLEAR_OREFLAG(huart);
+  STM32_UART_ClearRxFlags(huart);
   const err_t err = STM32UART_SetRxDMA(self);
 
   const uint32_t lock2 = STM32_UART_TX_Lock();
@@ -576,6 +992,7 @@ static void STM32_UART_RX_ISR_Handler(UART_HandleTypeDef* uart_handle,
     if (last_pos < dma_size) {
       const size_t data_size = dma_size - last_pos;
       if (data_size > 0U) {
+        STM32_UART_InvalidateDCacheByAddr(rx_buf + last_pos, data_size);
         STM32UART_HandleRxData(uart, rx_buf + last_pos, data_size);
       }
     }
@@ -588,20 +1005,27 @@ static void STM32_UART_RX_ISR_Handler(UART_HandleTypeDef* uart_handle,
     last_pos = 0U;
   }
 
+  if (curr_pos == last_pos) {
+    return;
+  }
+
   if (curr_pos > last_pos) {
     const size_t data_size = curr_pos - last_pos;
     if (data_size > 0U) {
+      STM32_UART_InvalidateDCacheByAddr(rx_buf + last_pos, data_size);
       STM32UART_HandleRxData(uart, rx_buf + last_pos, data_size);
     }
-  } else if (curr_pos < last_pos) {
+  } else {
     const size_t first_part_size = dma_size - last_pos;
     if (first_part_size > 0U) {
+      STM32_UART_InvalidateDCacheByAddr(rx_buf + last_pos, first_part_size);
       STM32UART_HandleRxData(uart, rx_buf + last_pos, first_part_size);
     }
 
     if (curr_pos > 0U) {
       const size_t second_part_size = curr_pos;
       if (second_part_size > 0U) {
+        STM32_UART_InvalidateDCacheByAddr(rx_buf, second_part_size);
         STM32UART_HandleRxData(uart, rx_buf, second_part_size);
       }
     }
@@ -697,10 +1121,41 @@ err_t STM32UARTFrameTx_Init(STM32UARTFrameTx_t* self,
     return self->last_error_;
   }
 
+  const bool tx_buf_ok =
+      STM32_UART_IsDmaAccessible(self->uart_handle_->hdmatx,
+                                 self->dma_buff_0_.addr_,
+                                 self->dma_buff_0_.size_) &&
+      STM32_UART_IsDmaAccessible(self->uart_handle_->hdmatx,
+                                 self->dma_buff_1_.addr_,
+                                 self->dma_buff_1_.size_) &&
+      STM32_UART_TxBuffersCacheSeparated(self->dma_buff_0_, self->dma_buff_1_);
+  if (!tx_buf_ok) {
+#if BSP_UART_DMA_FALLBACK_ENABLE
+    if (!STM32_UART_DMA_IsBDMA(self->uart_handle_->hdmatx) &&
+        (self->dma_buff_0_.size_ <= sizeof(stm32_uart_tx_fallback_buf[0][0]))) {
+      self->dma_buff_0_.addr_ = stm32_uart_tx_fallback_buf[self->id_][0];
+      self->dma_buff_1_.addr_ = stm32_uart_tx_fallback_buf[self->id_][1];
+      LOG_WARN("UART",
+               "串口逻辑编号=%u 的TX缓冲不满足DMA/Cache要求，已切换至.axi_ram"
+               "回退缓冲(%u字节)",
+               (unsigned)self->id_, (unsigned)self->dma_buff_0_.size_);
+    } else {
+      self->last_error_ = ARG_ERR;
+      LOG_ERROR("UART",
+                "变长帧发送初始化失败：DMA缓冲区地址或Cache对齐无效");
+      return self->last_error_;
+    }
+#else
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART", "变长帧发送初始化失败：DMA缓冲区地址或Cache对齐无效");
+    return self->last_error_;
+#endif
+  }
+
   stm32_uart_frame_tx_map[self->id_] = self;
   self->last_error_ = OK;
-  LOG_DEBUG("UART", "变长帧发送初始化完成 串口逻辑编号=%u 缓冲区=%u字节", (unsigned)self->id_,
-           (unsigned)self->dma_buff_0_.size_);
+  LOG_DEBUG("UART", "变长帧发送初始化完成 串口逻辑编号=%u 缓冲区=%u字节",
+            (unsigned)self->id_, (unsigned)self->dma_buff_0_.size_);
   return self->last_error_;
 }
 
@@ -727,6 +1182,19 @@ err_t STM32UARTFrameTx_SetTxDMA(STM32UARTFrameTx_t* self) {
   ASSERT(self->uart_handle_->hdmatx != NULL);
   if (self->uart_handle_->hdmatx == NULL) {
     self->last_error_ = PTR_NULL;
+    return self->last_error_;
+  }
+
+  if (!STM32_UART_IsDmaAccessible(self->uart_handle_->hdmatx,
+                                  self->dma_buff_0_.addr_,
+                                  self->dma_buff_0_.size_) ||
+      !STM32_UART_IsDmaAccessible(self->uart_handle_->hdmatx,
+                                  self->dma_buff_1_.addr_,
+                                  self->dma_buff_1_.size_) ||
+      !STM32_UART_TxBuffersCacheSeparated(self->dma_buff_0_,
+                                          self->dma_buff_1_)) {
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART", "变长帧发送DMA配置失败：缓冲区地址或Cache对齐无效");
     return self->last_error_;
   }
 
@@ -845,6 +1313,7 @@ err_t STM32UARTFrameTx_Flush(STM32UARTFrameTx_t* self) {
   } else {
     void* buf_addr = (self->active_buf_ == 0U) ? self->dma_buff_0_.addr_
                                                : self->dma_buff_1_.addr_;
+    STM32_UART_CleanDCacheByAddr(buf_addr, self->pending_size_);
     self->tx_busy_ = true;
     const HAL_StatusTypeDef tx_status = HAL_UART_Transmit_DMA(
         self->uart_handle_, (uint8_t*)buf_addr, (uint16_t)self->pending_size_);
@@ -935,8 +1404,7 @@ static void STM32_UART_DBM_Error(DMA_HandleTypeDef* hdma) {
   }
 
   CLEAR_BIT(self->uart_handle_->Instance->CR3, USART_CR3_DMAT);
-  __HAL_DMA_DISABLE_IT(hdma, DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
-  __HAL_DMA_DISABLE_IT(hdma, DMA_IT_FE);
+  STM32_UART_DMA_DisableAllIT(hdma);
   __HAL_DMA_DISABLE(hdma);
   // HAL 的 DMA 错误分支只在 TE 时复位状态；FE/DME 进入本回调时 State 仍为 BUSY
   // 且持锁。 流已被上面停止，这里补齐复位，任务侧 SetTxDMA + Flush
@@ -977,6 +1445,17 @@ err_t STM32UARTDoubleBufTx_Init(STM32UARTDoubleBufTx_t* self,
   if (!STM32_UART_TX_ValidBuffers(dma_buff_0, dma_buff_1)) {
     self->last_error_ = SIZE_ERR;
     LOG_ERROR("UART", "双缓冲发送初始化失败：DMA缓冲区无效");
+    return self->last_error_;
+  }
+  if (!STM32_UART_IsDmaAccessible(uart_handle->hdmatx, dma_buff_0.addr_,
+                                  dma_buff_0.size_) ||
+      !STM32_UART_IsDmaAccessible(uart_handle->hdmatx, dma_buff_1.addr_,
+                                  dma_buff_1.size_) ||
+      !STM32_UART_TxBuffersCacheSeparated(dma_buff_0, dma_buff_1)) {
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART",
+              "双缓冲发送初始化失败：缓冲区必须位于DMA可访问区且按Cache line"
+              "对齐隔离");
     return self->last_error_;
   }
   if ((stm32_uart_frame_tx_map[id] != NULL) ||
@@ -1024,6 +1503,16 @@ err_t STM32UARTDoubleBufTx_SetTxDMA(STM32UARTDoubleBufTx_t* self) {
     self->last_error_ = SIZE_ERR;
     return self->last_error_;
   }
+  if (!STM32_UART_IsDmaAccessible(huart->hdmatx, self->dma_buff_0_.addr_,
+                                  self->dma_buff_0_.size_) ||
+      !STM32_UART_IsDmaAccessible(huart->hdmatx, self->dma_buff_1_.addr_,
+                                  self->dma_buff_1_.size_) ||
+      !STM32_UART_TxBuffersCacheSeparated(self->dma_buff_0_,
+                                          self->dma_buff_1_)) {
+    self->last_error_ = ARG_ERR;
+    LOG_ERROR("UART", "双缓冲发送DMA配置失败：缓冲区地址或Cache对齐无效");
+    return self->last_error_;
+  }
   if (((huart->Init.Mode & UART_MODE_TX) != UART_MODE_TX) ||
       ((huart->Init.WordLength == UART_WORDLENGTH_9B) &&
        (huart->Init.Parity == UART_PARITY_NONE))) {
@@ -1033,7 +1522,7 @@ err_t STM32UARTDoubleBufTx_SetTxDMA(STM32UARTDoubleBufTx_t* self) {
 
   DMA_HandleTypeDef* hdma = huart->hdmatx;
   if (self->tx_busy_ || (huart->gState != HAL_UART_STATE_READY) ||
-      ((hdma->Instance->CR & DMA_SxCR_EN) != 0U)) {
+      STM32_UART_DMA_IsEnabled(hdma)) {
     self->last_error_ = BUSY;
     return self->last_error_;
   }
@@ -1046,7 +1535,9 @@ err_t STM32UARTDoubleBufTx_SetTxDMA(STM32UARTDoubleBufTx_t* self) {
   hdma->Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
   hdma->Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
   hdma->Init.Mode = DMA_CIRCULAR;
-  hdma->Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+  if (!STM32_UART_DMA_IsBDMA(hdma)) {
+    hdma->Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+  }
   const HAL_StatusTypeDef dma_status = HAL_DMA_Init(hdma);
   VERIFY(dma_status == HAL_OK);
   if (dma_status != HAL_OK) {
@@ -1061,14 +1552,12 @@ err_t STM32UARTDoubleBufTx_SetTxDMA(STM32UARTDoubleBufTx_t* self) {
   hdma->XferM1HalfCpltCallback = NULL;
   hdma->XferErrorCallback = STM32_UART_DBM_Error;
   hdma->XferAbortCallback = NULL;
-  __HAL_DMA_DISABLE_IT(hdma, DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
-  __HAL_DMA_DISABLE_IT(hdma, DMA_IT_FE);
-  CLEAR_BIT(hdma->Instance->CR, DMA_SxCR_CT | DMA_SxCR_PFCTRL);
-  SET_BIT(hdma->Instance->CR, DMA_SxCR_DBM);
-  hdma->Instance->PAR = (uint32_t)(uintptr_t)&huart->Instance->DR;
-  hdma->Instance->M0AR = (uint32_t)(uintptr_t)self->dma_buff_0_.addr_;
-  hdma->Instance->M1AR = (uint32_t)(uintptr_t)self->dma_buff_1_.addr_;
-  hdma->Instance->NDTR = (uint32_t)self->dma_buff_0_.size_;
+  STM32_UART_DMA_DisableAllIT(hdma);
+  STM32_UART_DMA_ConfigDoubleBuffer(
+      hdma, (uint32_t)(uintptr_t)STM32_UART_TxDataReg(huart),
+      (uint32_t)(uintptr_t)self->dma_buff_0_.addr_,
+      (uint32_t)(uintptr_t)self->dma_buff_1_.addr_,
+      (uint32_t)self->dma_buff_0_.size_);
   self->active_buf_ = 0U;
   self->dma_ready_ = true;
   self->last_error_ = OK;
@@ -1127,17 +1616,21 @@ err_t STM32UARTDoubleBufTx_Flush(STM32UARTDoubleBufTx_t* self) {
     err = STATE_ERR;
   } else if (self->tx_busy_ || (huart->gState != HAL_UART_STATE_READY) ||
              (huart->hdmatx->State != HAL_DMA_STATE_READY) ||
-             ((huart->hdmatx->Instance->CR & DMA_SxCR_EN) != 0U)) {
+             STM32_UART_DMA_IsEnabled(huart->hdmatx)) {
     err = BUSY;
   } else {
     CLEAR_BIT(huart->Instance->CR3, USART_CR3_DMAT);
-    CLEAR_BIT(huart->hdmatx->Instance->CR, DMA_SxCR_CT);
+    STM32_UART_DMA_ClearCurrentTarget(huart->hdmatx);
+    STM32_UART_CleanDCacheByAddr(self->dma_buff_0_.addr_,
+                                 self->dma_buff_0_.size_);
+    STM32_UART_CleanDCacheByAddr(self->dma_buff_1_.addr_,
+                                 self->dma_buff_1_.size_);
     __DMB();
     self->active_buf_ = 0U;
     self->tx_busy_ = true;
     const HAL_StatusTypeDef status = HAL_DMAEx_MultiBufferStart_IT(
         huart->hdmatx, (uint32_t)(uintptr_t)self->dma_buff_0_.addr_,
-        (uint32_t)(uintptr_t)&huart->Instance->DR,
+        (uint32_t)(uintptr_t)STM32_UART_TxDataReg(huart),
         (uint32_t)(uintptr_t)self->dma_buff_1_.addr_,
         (uint32_t)self->dma_buff_0_.size_);
     if (status == HAL_OK) {
@@ -1145,7 +1638,7 @@ err_t STM32UARTDoubleBufTx_Flush(STM32UARTDoubleBufTx_t* self) {
       huart->TxXferSize = (uint16_t)self->dma_buff_0_.size_;
       huart->TxXferCount = huart->TxXferSize;
       huart->gState = HAL_UART_STATE_BUSY_TX;
-      __HAL_UART_CLEAR_FLAG(huart, UART_FLAG_TC);
+      STM32_UART_ClearTcFlag(huart);
       SET_BIT(huart->Instance->CR3, USART_CR3_DMAT);
     } else {
       self->tx_busy_ = false;
@@ -1181,9 +1674,7 @@ err_t STM32UARTDoubleBufTx_Stop(STM32UARTDoubleBufTx_t* self) {
     return OK;
   }
   CLEAR_BIT(huart->Instance->CR3, USART_CR3_DMAT);
-  __HAL_DMA_DISABLE_IT(huart->hdmatx,
-                       DMA_IT_TC | DMA_IT_HT | DMA_IT_TE | DMA_IT_DME);
-  __HAL_DMA_DISABLE_IT(huart->hdmatx, DMA_IT_FE);
+  STM32_UART_DMA_DisableAllIT(huart->hdmatx);
   self->dma_ready_ = false;
   STM32_UART_TX_Unlock(primask);
 
@@ -1223,15 +1714,16 @@ void STM32UARTDoubleBufTx_HandleTxComplete(STM32UARTDoubleBufTx_t* self) {
   if ((self == NULL) || !self->tx_busy_) {
     return;
   }
-  const uint32_t ct = self->uart_handle_->hdmatx->Instance->CR & DMA_SxCR_CT;
+  const uint8_t ct = STM32_UART_DMA_GetCurrentTarget(self->uart_handle_->hdmatx);
   __DMB();
-  self->active_buf_ = (ct == 0U) ? 0U : 1U;
+  self->active_buf_ = ct;
   // CT=0 表示DMA切换到了M0，说明M1刚完成
   // CT=1 表示DMA切换到了M1，说明M0刚完成
   BSP_UART_RawData_t completed =
       (ct == 0U) ? self->dma_buff_1_ : self->dma_buff_0_;
   if (self->tx_callback_ != NULL) {
     self->tx_callback_((uint8_t*)completed.addr_, completed.size_);
+    STM32_UART_CleanDCacheByAddr(completed.addr_, completed.size_);
     __DMB();
   }
 }
@@ -1313,9 +1805,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart) {
             (rx->rx_err_burst_count_ <= BSP_UART_RX_ISR_BURST_LIMIT) &&
             STM32_UART_TryRestartRxInISR(rx);
         if (!recovered) {
-          CLEAR_BIT(huart->Instance->CR1,
-                    USART_CR1_RXNEIE | USART_CR1_PEIE | USART_CR1_IDLEIE);
-          CLEAR_BIT(huart->Instance->CR3, USART_CR3_EIE | USART_CR3_DMAR);
+          STM32_UART_ClearRxInterrupts(huart);
           rx->last_error_ = FAILED;
           rx->rx_restart_pending_ = true;
           STM32_UART_ScheduleRxRecoveryFromISR();
@@ -1331,7 +1821,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef* huart) {
 
   // DMA TC 已搬完但 UART TC 未到的窗口里 EN 同样为 0，此时 TCIE 已挂起、
   // 正常完成路径仍会触发 HandleTxComplete，不能在这里回收状态。
-  if (((huart->hdmatx->Instance->CR & DMA_SxCR_EN) == 0U) &&
+  if (!STM32_UART_DMA_IsEnabled(huart->hdmatx) &&
       ((huart->Instance->CR1 & USART_CR1_TCIE) == 0U)) {
     tx->tx_busy_ = false;
   }

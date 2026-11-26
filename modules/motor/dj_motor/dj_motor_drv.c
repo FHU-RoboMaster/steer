@@ -3,7 +3,7 @@
  * @brief DJI 电机 CAN 协议编解码、路由推导与发送适配实现。
  *
  * 本文件全部为无状态函数：不持有全局注册表，不管理 pending_mask。
- * 所有 CAN 发送通过 bsp_can 的 STM32CAN_Send() 完成，使用 11 bit 标准数据帧、
+ * 所有 FDCAN 发送通过 bsp_fdcan 的 STM32FDCAN_SendStd() 完成，使用 11 bit 标准数据帧、
  * DLC=8。控制帧 ID 直接使用 dj_motor_group_e 的数值。
  *
  * @note 发送失败（BUSY / FAILED 等）原样返回给 ctrl 层；本层不缓存待发帧。
@@ -211,18 +211,18 @@ float dj_motor_drv_rpm_to_rad_s(dj_motor_type_e type, int16_t rpm) {
 }
 
 /**
- * @brief 组帧后调用 STM32CAN_Send；邮箱忙等错误原样透传。
+ * @brief 组帧后调用 STM32FDCAN_SendStd；TX FIFO 满等错误原样透传。
  */
-err_t dj_motor_drv_send_group(STM32CAN_t *can, dj_motor_group_e group,
+err_t dj_motor_drv_send_group(STM32FDCAN_t *fdcan, dj_motor_group_e group,
                               const int16_t commands[4]) {
-  if ((can == NULL) || (commands == NULL)) {
+  if ((fdcan == NULL) || (commands == NULL)) {
     return PTR_NULL;
   }
   if (!dj_motor_drv_group_is_valid(group)) {
     return ARG_ERR;
   }
 
-  uint8_t payload[BSP_CAN_DATA_SIZE] = {0};
+  uint8_t payload[BSP_FDCAN_CLASSIC_DATA_SIZE] = {0};
   dj_motor_drv_pack_commands(commands, payload);
-  return STM32CAN_Send(can, (uint32_t)group, payload, sizeof(payload));
+  return STM32FDCAN_SendStd(fdcan, (uint32_t)group, payload, sizeof(payload));
 }

@@ -2,7 +2,7 @@
  * @file dj_motor_ctrl.c
  * @brief DJI 电机总线/实例生命周期与写齐再发状态机实现。
  *
- * 本文件维护调用方静态分配的 dj_motor_bus_t 与 dj_motor_t，并通过 bsp_can
+ * 本文件维护调用方静态分配的 dj_motor_bus_t 与 dj_motor_t，并通过 bsp_fdcan
  * 的订阅式接收接口处理标准数据帧。发送语义对齐 RMMotor 的 pack-and-send：
  *
  * - set_command 限幅并写 group.tx_buff[slot]，置 pending 对应位；
@@ -10,8 +10,8 @@
  * - 发送失败不清 pending，调用方可重写或 force_flush；
  * - zero_and_flush 将已注册槽命令置 0 后立即发送，供安全停机。
  *
- * @note RX 回调运行在 CAN 中断上下文：只解码原始整数并更新 tick，禁止浮点、
- *       日志、动态分配与二次发送。STM32CAN_Send 始终在临界区外调用。
+ * @note RX 回调运行在 FDCAN 中断上下文：只解码原始整数并更新 tick，禁止浮点、
+ *       日志、动态分配与二次发送。STM32FDCAN_SendStd 始终在临界区外调用。
  */
 #include "dj_motor_ctrl.h"
 
@@ -50,7 +50,7 @@ static err_t dj_motor_send_snapshot(dj_motor_bus_t *bus,
                                     dj_motor_group_state_t *group,
                                     const int16_t commands[4],
                                     bool clear_pending_on_ok) {
-  const err_t result = dj_motor_drv_send_group(bus->can, group->id, commands);
+  const err_t result = dj_motor_drv_send_group(bus->fdcan, group->id, commands);
   if ((result == OK) && clear_pending_on_ok) {
     taskENTER_CRITICAL();
     group->pending_mask = 0U;
@@ -60,21 +60,24 @@ static err_t dj_motor_send_snapshot(dj_motor_bus_t *bus,
 }
 
 /**
- * @brief 总线级 CAN RX 回调：按 feedback_id 匹配电机并更新原始反馈。
- * @param can 触发回调的 CAN 对象。
+ * @brief 总线级 FDCAN RX 回调：按 feedback_id 匹配电机并更新原始反馈。
+ * @param fdcan 触发回调的 FDCAN 对象。
  * @param frame 完整帧快照，仅本次回调有效。
  * @param context 注册订阅时传入的 bus 指针。
  *
- * 过滤条件：context 有效、can 指针一致、标准数据帧、DLC=8。
+ * 过滤条件：context 有效、fdcan 指针一致、Classical 标准数据帧、DLC=8。
  * 命中后解码到局部 raw，再整体写回 motor，保证并发读不会看到半帧。
  * 同一帧最多匹配一个电机；匹配成功后立即返回。
  */
-static void dj_motor_rx_callback(STM32CAN_t *can, const BSP_CAN_Frame_t *frame,
+static void dj_motor_rx_callback(STM32FDCAN_t *fdcan,
+                                 const BSP_FDCAN_Frame_t *frame,
                                  void *context) {
   dj_motor_bus_t *bus = (dj_motor_bus_t *)context;
-  if ((bus == NULL) || (can == NULL) || (frame == NULL) || (bus->can != can) ||
-      (frame->ide_ != CAN_ID_STD) || (frame->rtr_ != CAN_RTR_DATA) ||
-      (frame->size_ != BSP_CAN_DATA_SIZE)) {
+  if ((bus == NULL) || (fdcan == NULL) || (frame == NULL) ||
+      (bus->fdcan != fdcan) || (frame->id_type_ != FDCAN_STANDARD_ID) ||
+      (frame->frame_type_ != FDCAN_DATA_FRAME) ||
+      (frame->fd_format_ != FDCAN_CLASSIC_CAN) ||
+      (frame->size_ != BSP_FDCAN_CLASSIC_DATA_SIZE)) {
     return;
   }
 
@@ -110,20 +113,20 @@ static void dj_motor_rx_callback(STM32CAN_t *can, const BSP_CAN_Frame_t *frame,
 }
 
 /**
- * @brief 绑定 CAN、复位控制组并注册 RX 订阅。
+ * @brief 绑定 FDCAN、复位控制组并注册 RX 订阅。
  *
  * 订阅失败时清零整个 bus，避免 initialized 与订阅状态不一致。
  */
-err_t dj_motor_bus_init(dj_motor_bus_t *bus, STM32CAN_t *can) {
-  if ((bus == NULL) || (can == NULL)) {
+err_t dj_motor_bus_init(dj_motor_bus_t *bus, STM32FDCAN_t *fdcan) {
+  if ((bus == NULL) || (fdcan == NULL)) {
     return PTR_NULL;
   }
 
   memset(bus, 0, sizeof(*bus));
-  bus->can = can;
+  bus->fdcan = fdcan;
   dj_motor_groups_reset(bus);
 
-  const err_t result = STM32CAN_SubscribeRx(can, dj_motor_rx_callback, bus);
+  const err_t result = STM32FDCAN_SubscribeRx(fdcan, dj_motor_rx_callback, bus);
   if (result != OK) {
     memset(bus, 0, sizeof(*bus));
     return result;
@@ -137,17 +140,17 @@ err_t dj_motor_bus_init(dj_motor_bus_t *bus, STM32CAN_t *can) {
  * @brief 注册单个电机：路由推导 → 冲突检测 → 挂入 bus 与 group。
  *
  * 冲突检测包括：同 bus 重复 feedback_id、重复 (group,slot)、槽位已被占用。
- * CAN 已 Start 后拒绝继续注册，保证运行期注册表只读、RX 可安全遍历指针。
+ * FDCAN 已 Start 后拒绝继续注册，保证运行期注册表只读、RX 可安全遍历指针。
  */
 err_t dj_motor_init(dj_motor_t *motor, dj_motor_bus_t *bus,
                     dj_motor_type_e type, uint8_t device_id, bool reversed) {
   if ((motor == NULL) || (bus == NULL)) {
     return PTR_NULL;
   }
-  if (!bus->initialized || (bus->can == NULL)) {
+  if (!bus->initialized || (bus->fdcan == NULL)) {
     return STATE_ERR;
   }
-  if (bus->can->started_) {
+  if (bus->fdcan->started_) {
     return STATE_ERR;
   }
   if (bus->motor_count >= DJ_MOTOR_BUS_CAPACITY) {

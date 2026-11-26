@@ -5,10 +5,82 @@
 #include "main.h"
 #include "usart.h"
 
+// ==================== DMA 缓冲对齐与内存段宏（兼容 F4 / H7 Cache） ====================
+
+//! D-Cache cache line 字节数；有 D-Cache（如 STM32H723）为 32，无 Cache（如 F4）为 1。
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+#ifndef BSP_UART_DCACHE_LINE_SIZE
+#ifdef __SCB_DCACHE_LINE_SIZE
+#define BSP_UART_DCACHE_LINE_SIZE (__SCB_DCACHE_LINE_SIZE)
+#else
+#define BSP_UART_DCACHE_LINE_SIZE (32U)
+#endif
+#endif
+#define BSP_UART_DMA_ALIGN __attribute__((aligned(32)))
+#else
+#ifndef BSP_UART_DCACHE_LINE_SIZE
+#define BSP_UART_DCACHE_LINE_SIZE (1U)
+#endif
+#define BSP_UART_DMA_ALIGN
+#endif
+
+//! 将缓冲区长度向上对齐到 D-Cache line 整数倍（无 Cache 平台保持原长度）。
+#define BSP_UART_DMA_ALIGN_UP(size)                             \
+  ((((size) + (BSP_UART_DCACHE_LINE_SIZE - 1U)) /               \
+    BSP_UART_DCACHE_LINE_SIZE) *                                \
+   BSP_UART_DCACHE_LINE_SIZE)
+
+//! 普通 DMA（DMA1/DMA2）缓冲区所在内存段：
+//! STM32H7 默认放到链接脚本 .axi_ram（RAM_D1，避免落入 DMA 不可访问的 DTCMRAM）；
+//! STM32F4 等单 SRAM 芯片为空，落入默认 .bss。
+#ifndef BSP_UART_DMA_SECTION
+#if defined(D1_AXISRAM_BASE)
+#define BSP_UART_DMA_SECTION __attribute__((section(".axi_ram")))
+#else
+#define BSP_UART_DMA_SECTION
+#endif
+#endif
+
+//! H7 BDMA（如 LPUART1）缓冲区所在内存段：放到 .ram_d3（RAM_D3）。
+#ifndef BSP_UART_BDMA_SECTION
+#if defined(D3_SRAM_BASE)
+#define BSP_UART_BDMA_SECTION __attribute__((section(".ram_d3")))
+#else
+#define BSP_UART_BDMA_SECTION
+#endif
+#endif
+
+//! 声明兼容 F4 / H7（含 D-Cache）的 UART DMA 缓冲区（可前加 static）。
+//! 示例：static BSP_UART_DMA_BUFFER(uart_rx_buf, 128U);
+#define BSP_UART_DMA_BUFFER(name, size) \
+  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_ALIGN BSP_UART_DMA_SECTION
+
+//! 声明兼容 H7 BDMA（如 LPUART1）的 UART DMA 缓冲区（可前加 static）。
+#define BSP_UART_BDMA_BUFFER(name, size) \
+  uint8_t name[BSP_UART_DMA_ALIGN_UP(size)] BSP_UART_DMA_ALIGN BSP_UART_BDMA_SECTION
+
+//! H7 兼容旧模块回退缓冲开关：当调用方未将 RX / FrameTx 缓冲放到 .axi_ram
+//! 或未按 32 字节对齐时，自动切换到 BSP 内部 .axi_ram 缓冲（F4 默认关闭，零开销）。
+#ifndef BSP_UART_DMA_FALLBACK_ENABLE
+#if defined(D1_AXISRAM_BASE)
+#define BSP_UART_DMA_FALLBACK_ENABLE (1U)
+#else
+#define BSP_UART_DMA_FALLBACK_ENABLE (0U)
+#endif
+#endif
+
+#ifndef BSP_UART_DMA_FALLBACK_RX_SIZE
+#define BSP_UART_DMA_FALLBACK_RX_SIZE (256U)
+#endif
+
+#ifndef BSP_UART_DMA_FALLBACK_TX_SIZE
+#define BSP_UART_DMA_FALLBACK_TX_SIZE (256U)
+#endif
+
 // ==================== UART 类型与缓冲描述 ====================
 
 //! UART BSP 逻辑设备编号。
-//! 枚举项按当前芯片实际启用的 USART/UART 宏展开，保持和 CubeMX 外设定义一致。
+//! 枚举项按当前芯片实际启用的 USART/UART/LPUART 宏展开，保持和 CubeMX 外设定义一致。
 typedef enum {
 #ifdef USART1
   BSP_USART1,
@@ -19,14 +91,65 @@ typedef enum {
 #ifdef USART3
   BSP_USART3,
 #endif
+#ifdef USART4
+  BSP_USART4,
+#endif
+#ifdef USART5
+  BSP_USART5,
+#endif
 #ifdef USART6
   BSP_USART6,
+#endif
+#ifdef USART7
+  BSP_USART7,
+#endif
+#ifdef USART8
+  BSP_USART8,
+#endif
+#ifdef USART9
+  BSP_USART9,
+#endif
+#ifdef USART10
+  BSP_USART10,
+#endif
+#ifdef UART1
+  BSP_UART1,
+#endif
+#ifdef UART2
+  BSP_UART2,
+#endif
+#ifdef UART3
+  BSP_UART3,
 #endif
 #ifdef UART4
   BSP_UART4,
 #endif
 #ifdef UART5
   BSP_UART5,
+#endif
+#ifdef UART6
+  BSP_UART6,
+#endif
+#ifdef UART7
+  BSP_UART7,
+#endif
+#ifdef UART8
+  BSP_UART8,
+#endif
+#ifdef UART9
+  BSP_UART9,
+#endif
+#ifdef UART10
+  BSP_UART10,
+#endif
+#ifdef LPUART1
+  BSP_LPUART1,
+#endif
+#ifdef LPUART2
+  BSP_LPUART2,
+#endif
+#ifdef LPUART3
+  BSP_LPUART3,
 #endif
 
   BSP_UART_NUMBER,
@@ -91,7 +214,9 @@ typedef struct {
 } STM32UARTFrameTx_t;
 
 //! 硬件双缓冲 DMA TX 控制块。
-//! M0/M1 以相同 NDTR 自动循环，缓冲区必须位于 DMA 可访问的 SRAM，不能位于 CCM。
+//! M0/M1 以相同 NDTR 自动循环，缓冲区必须位于 DMA 可访问的 SRAM（F4 不能位于
+//! CCM，H7 不能位于 DTCM/ITCM，推荐使用 BSP_UART_DMA_BUFFER() 放到 .axi_ram
+//! 并按 32 字节对齐）。
 typedef struct {
   BSP_UART_t id_;                             //! BSP 逻辑串口编号
   BSP_UART_RawData_t dma_buff_0_;             //! 硬件 M0 缓冲

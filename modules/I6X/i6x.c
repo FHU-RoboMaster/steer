@@ -6,7 +6,7 @@
 
 // ==================== DMA 缓冲与对象状态 ====================
 
-static uint8_t dma_buffer_[I6X_FRAME_SIZE * 2u];
+static BSP_UART_DMA_BUFFER(dma_buffer_, I6X_FRAME_SIZE * 2U);
 static uint8_t i6x_rx_buffer_[I6X_FRAME_SIZE];
 static volatile bool frame_ready_ = false;
 static I6X_t *instance_ = NULL;

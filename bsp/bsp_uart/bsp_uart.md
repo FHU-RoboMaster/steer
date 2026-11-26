@@ -11,7 +11,8 @@ RX 使用硬件循环 DMA,HAL 空闲线(IDLE)事件到来时按 DMA 写入位置
 ```c
 #include "bsp_uart.h"
 
-static uint8_t dma_buffer_[256];
+/* 推荐用 BSP_UART_DMA_BUFFER：H7 自动 32 字节对齐并放入 .axi_ram，F4 退化为普通数组 */
+static BSP_UART_DMA_BUFFER(dma_buffer_, 256U);
 
 static void my_rx_callback(uint8_t* data, size_t size)
 {
@@ -34,7 +35,8 @@ err_t uart_rx_init(UART_HandleTypeDef* huart)
 软件双缓冲轮转:DMA 空闲时 `Write` 立即发送;忙时写入另一块缓冲排队一帧,完成中断后自动续发:
 
 ```c
-static uint8_t tx_buf0[64], tx_buf1[64];
+static BSP_UART_DMA_BUFFER(tx_buf0, 64U);
+static BSP_UART_DMA_BUFFER(tx_buf1, 64U);
 static STM32UARTFrameTx_t uart_tx;
 
 err_t uart_tx_init(UART_HandleTypeDef* huart)
@@ -58,8 +60,8 @@ void send_frame(const uint8_t* data, size_t size)
 M0/M1 两页以相同 NDTR 由硬件自动循环切换,适合音频流、调试波形等恒定码率输出;每次页发送完成时回调刚空闲的页,在 ISR 中填充下一轮数据:
 
 ```c
-static uint8_t page0[512] __attribute__((section(".sram")));  /* 须在 DMA 可访问的 SRAM */
-static uint8_t page1[512];
+static BSP_UART_DMA_BUFFER(page0, 512U);  /* 须在 DMA 可访问 SRAM，H7 放入 .axi_ram 且 32 字节对齐 */
+static BSP_UART_DMA_BUFFER(page1, 512U);
 static STM32UARTDoubleBufTx_t uart_stream;
 
 static void refill_callback(uint8_t* data, size_t size)
@@ -88,6 +90,8 @@ err_t stream_init(UART_HandleTypeDef* huart)
 - RX 回调运行在 HAL 回调(中断)上下文,必须短且非阻塞;延后处理先拷贝.
 - 变长帧与硬件 DBM 互斥:同一 UART 只能注册一个 TX 对象.
 - 两块 TX 缓冲必须等长、非重叠且 ≤ 65535 字节(DMA NDTR 为 16 位);单次 Write 不能超过缓冲容量.
-- 硬件 DBM 的缓冲必须位于 DMA 可访问的 SRAM,不能放在 CCM;页填充回调的耗时和中断延迟必须小于一页的发送时间.
+- 硬件 DBM 的缓冲必须位于 DMA 可访问的 SRAM（F4 不能在 CCM，H7 不能在 DTCM/ITCM，BDMA 须在 `.ram_d3`）且在开启 D-Cache 时按 32 字节对齐隔离；页填充回调的耗时和中断延迟必须小于一页的发送时间.
+- STM32H7 等开启 D-Cache 的平台会在 RX 读取前自动执行 `SCB_InvalidateDCache_by_Addr`，在 TX DMA 启动及 DBM 换页后自动执行 `SCB_CleanDCache_by_Addr`；F4 等无 Cache 平台自动退化为空操作.
+- 推荐使用 `BSP_UART_DMA_BUFFER(name, size)`（BDMA 场景用 `BSP_UART_BDMA_BUFFER`）声明缓冲区；若旧模块未迁移到 `.axi_ram` / 未按 32 字节对齐，`RX` 与 `FrameTx` 在 H7 上会自动回退到 BSP 内部 `.axi_ram` 缓冲并输出告警日志.
 - 变长帧 TX 只保留一块 pending 缓冲,已满返回 `BUSY`;返回失败表示本次写入未被接受,可安全重试.
 - `Stop()` 不是页边界操作,可能截断当前页,已进入 UART 的字节仍会发出.

@@ -8,12 +8,12 @@
 #include <math.h>
 #include <stdbool.h>
 
-#include "bsp_can.h"
-#include "can.h"
+#include "bsp_fdcan.h"
 #include "chassis_dynamics.h"
 #include "comp_utils.h"
 #include "dj_motor_ctrl.h"
 #include "dr16.h"
+#include "fdcan.h"
 #include "pid_location.h"
 
 /* DR16 task owns the decoded command and updates it periodically. */
@@ -88,25 +88,25 @@ static void chassis_apply_speed(uint8_t motor_index, const char *operation) {
  * @return OK 或错误码
  */
 err_t chassis_control_init(void) {
-  LOG_DEBUG("底盘计算", "开始初始化底盘 CAN 总线和电机");
-  /* 获取 CAN2 的 BSP 对象（假设 CAN2 用于底盘） */
-  ASSERT(CAN2 != NULL);
-  BSP_CAN_t can_id = BSP_CAN_get_id(CAN2);
-  if (can_id == BSP_CAN_ID_ERROR) {
-    LOG_FATAL("底盘计算", "CAN2 查找BSP对象失败 err=%d", (int)NOT_FOUND);
-    ASSERT(can_id != BSP_CAN_ID_ERROR);
+  LOG_DEBUG("底盘计算", "开始初始化底盘 FDCAN 总线和电机");
+  /* 获取 FDCAN2 的 BSP 对象（假设 FDCAN2 用于底盘） */
+  ASSERT(FDCAN2 != NULL);
+  BSP_FDCAN_t fdcan_id = BSP_FDCAN_get_id(FDCAN2);
+  if (fdcan_id == BSP_FDCAN_ID_ERROR) {
+    LOG_FATAL("底盘计算", "FDCAN2 查找BSP对象失败 err=%d", (int)NOT_FOUND);
+    ASSERT(fdcan_id != BSP_FDCAN_ID_ERROR);
     return NOT_FOUND;
   }
 
-  STM32CAN_t *can2 = STM32CAN_GetInstance(can_id);
-  if (can2 == NULL) {
-    LOG_FATAL("底盘计算", "CAN2 获取控制块失败 err=%d", (int)PTR_NULL);
-    ASSERT(can2 != NULL);
+  STM32FDCAN_t *fdcan2 = STM32FDCAN_GetInstance(fdcan_id);
+  if (fdcan2 == NULL) {
+    LOG_FATAL("底盘计算", "FDCAN2 获取控制块失败 err=%d", (int)PTR_NULL);
+    ASSERT(fdcan2 != NULL);
     return PTR_NULL;
   }
 
   /* 初始化底盘总线 */
-  chassis_bus_init_result = dj_motor_bus_init(&chassis_bus, can2);
+  chassis_bus_init_result = dj_motor_bus_init(&chassis_bus, fdcan2);
   if (chassis_bus_init_result != OK) {
     LOG_FATAL("底盘计算", "CAN2 总线初始化失败 err=%d",
               (int)chassis_bus_init_result);

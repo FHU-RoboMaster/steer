@@ -171,20 +171,20 @@ SECTIONS
   /* DMA-accessible buffers in D3 SRAM / RAM_D3. */
   .ram_d3 (NOLOAD) :
   {
-    . = ALIGN(4);
+    . = ALIGN(32);
     *(.ram_d3)
     *(.ram_d3*)
-    . = ALIGN(4);
+    . = ALIGN(32);
   } >RAM_D3
 
   /* DMA-accessible buffers in AXI SRAM / RAM_D1. */
- .axi_ram (NOLOAD) :
- {
-  . = ALIGN(4);
-  *(.axi_ram)
-  *(.axi_ram*)
-  . = ALIGN(4);
- } >RAM
+  .axi_ram (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.axi_ram)
+    *(.axi_ram*)
+    . = ALIGN(32);
+  } >RAM_D1
 
  /* Initialized TLS data section */
   .tdata : ALIGN(4)

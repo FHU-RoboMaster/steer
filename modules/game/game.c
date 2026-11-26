@@ -13,7 +13,7 @@
 
 CommuniCateTypeDef custom_robot_data;
 
-static uint8_t game_rx_dma_buff_[GAME_RX_DMA_BUF_SIZE];
+static BSP_UART_DMA_BUFFER(game_rx_dma_buff_, GAME_RX_DMA_BUF_SIZE);
 static Game_t *instance_ = NULL;
 
 /**

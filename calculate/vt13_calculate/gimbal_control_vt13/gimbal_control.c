@@ -8,11 +8,11 @@
 #include <math.h>
 #include <stdbool.h>
 
-#include "bsp_can.h"
-#include "can.h"
+#include "bsp_fdcan.h"
 // #include "chassis_dynamics.h"
 #include "comp_cmd.h"
 #include "dj_motor_ctrl.h"
+#include "fdcan.h"
 #include "pid_incremental.h"
 #include "process.h"
 #include "vt13.h"
@@ -36,22 +36,22 @@ static PIDInstance_jie pid_location[2];
  * @return OK 或错误码
  */
 err_t gimbal_control_init(void) {
-  LOG_DEBUG("云台计算", "开始初始化 VT13 云台 CAN 总线和电机");
-  /* 获取 CAN1 的 BSP 对象（假设 CAN1 用于云台） */
-  BSP_CAN_t can_id = BSP_CAN_get_id(CAN1);
-  if (can_id == BSP_CAN_ID_ERROR) {
-    LOG_ERROR("云台计算", "未找到 VT13 云台 CAN1 对象");
+  LOG_DEBUG("云台计算", "开始初始化 VT13 云台 FDCAN 总线和电机");
+  /* 获取 FDCAN1 的 BSP 对象（假设 FDCAN1 用于云台） */
+  BSP_FDCAN_t fdcan_id = BSP_FDCAN_get_id(FDCAN1);
+  if (fdcan_id == BSP_FDCAN_ID_ERROR) {
+    LOG_ERROR("云台计算", "未找到 VT13 云台 FDCAN1 对象");
     return NOT_FOUND;
   }
 
-  STM32CAN_t* can1 = STM32CAN_GetInstance(can_id);
-  if (can1 == NULL) {
-    LOG_ERROR("云台计算", "VT13 云台 CAN1 控制块为空");
+  STM32FDCAN_t* fdcan1 = STM32FDCAN_GetInstance(fdcan_id);
+  if (fdcan1 == NULL) {
+    LOG_ERROR("云台计算", "VT13 云台 FDCAN1 控制块为空");
     return PTR_NULL;
   }
 
   /* 初始化云台总线 */
-  gimbal_bus_init_result = dj_motor_bus_init(&gimbal_bus, can1);
+  gimbal_bus_init_result = dj_motor_bus_init(&gimbal_bus, fdcan1);
   if (gimbal_bus_init_result != OK) {
     LOG_ERROR("云台计算", "VT13 云台总线初始化失败，错误码=%d",
               (int)gimbal_bus_init_result);

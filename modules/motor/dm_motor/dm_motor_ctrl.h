@@ -2,12 +2,12 @@
  * @file dm_motor_ctrl.h
  * @brief 达妙电机对象管理、反馈路由与参数读取接口。
  *
- * 本层管理六个电机对象，订阅 bsp_can 接收回调，并在中断回调中完成实时反馈解析和
+ * 本层管理六个电机对象，订阅 bsp_fdcan 接收回调，并在中断回调中完成实时反馈解析和
  * 参数帧快照。任务上下文通过 read_all_motor_data() 推进参数轮询状态机。
  */
 #pragma once
 
-#include "bsp_can.h"
+#include "bsp_fdcan.h"
 #include "convert.h"
 #include "dm_motor_drv.h"
 #include "main.h"
@@ -59,7 +59,7 @@ void dm_motor_init(void);
  * @note 应在任务上下文周期调用，不应在 CAN 中断回调中调用。函数每次最多处理一个
  *       已完成快照并发出一个新的寄存器读取命令。
  */
-void read_all_motor_data(STM32CAN_t *hcan, motor_t *motor);
+void read_all_motor_data(STM32FDCAN_t *hfdcan, motor_t *motor);
 
 /**
  * @brief 解析一帧寄存器反馈并更新电机参数镜像。
@@ -72,16 +72,16 @@ void read_all_motor_data(STM32CAN_t *hcan, motor_t *motor);
 void receive_motor_data(motor_t *motor, const uint8_t *data);
 
 /**
- * @brief 把本模块的 CAN 接收回调订阅到指定 BSP CAN 设备。
- * @param can 已初始化的 BSP CAN 设备。
- * @return OK 表示订阅成功；can 为 NULL 时返回 PTR_NULL；其他错误码由
- *         STM32CAN_SubscribeRx() 透传。
+ * @brief 把本模块的 FDCAN 接收回调订阅到指定 BSP FDCAN 设备。
+ * @param fdcan 已初始化的 BSP FDCAN 设备。
+ * @return OK 表示订阅成功；fdcan 为 NULL 时返回 PTR_NULL；其他错误码由
+ *         STM32FDCAN_SubscribeRx() 透传。
  *
  * 订阅后仅接收 11 bit 标准数据帧，并把反馈 ID 0x20～0x25 路由到对应电机对象。
  */
-err_t dm_motor_attach_can(STM32CAN_t *can);
+err_t dm_motor_attach_fdcan(STM32FDCAN_t *fdcan);
 
-// CAN 接收回调的函数类型由 bsp_can.h 统一声明，本头文件只公开订阅入口。
+// FDCAN 接收回调的函数类型由 bsp_fdcan.h 统一声明，本头文件只公开订阅入口。
 
 /**
  * @brief 解析达妙实时反馈帧。

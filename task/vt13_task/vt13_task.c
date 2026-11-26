@@ -12,7 +12,7 @@ void vt13_task(void* argument) {
   RM_UNUSED(argument);
   LOG_DEBUG("VT13任务", "任务开始初始化遥控器");
   static vt13_t instance;
-  err_t status = vt13_init(&instance, &huart3);
+  err_t status = vt13_init(&instance, &huart7);
   vt13 = &instance;
   if (status == OK) status = vt13_start(vt13);
   ASSERT(status == OK);

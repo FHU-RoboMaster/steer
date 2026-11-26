@@ -1,13 +1,13 @@
 # dr16_task
 
-DR16 遥控器任务.初始化 USART2 上的 DR16 接收逻辑,并周期性刷新解析结果与在线状态.
+DR16 遥控器任务.初始化 UART5 上的 DR16 接收逻辑,并周期性刷新解析结果与在线状态.
 
 ## 任务流程
 
 ```c
 void dr16_task(void* argument) {
   static DR16_t dr16_instance;                 /* 静态存储,覆盖任务生命周期 */
-  err_t status = DR16_Init(&dr16_instance, &huart2);
+  err_t status = DR16_Init(&dr16_instance, &huart5);
   dr16 = &dr16_instance;                       /* 全局指针,供业务模块读取 */
   dr16->thread_alert = xTaskGetCurrentTaskHandle();  /* 绑定任务通知句柄 */
 

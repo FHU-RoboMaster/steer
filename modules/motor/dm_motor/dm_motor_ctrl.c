@@ -2,7 +2,7 @@
  * @file dm_motor_ctrl.c
  * @brief 达妙电机对象初始化、CAN 反馈分发和参数轮询状态机实现。
  *
- * 本文件维护六个全局电机对象，并通过 bsp_can 的订阅式接收接口处理标准数据帧。
+ * 本文件维护六个全局电机对象，并通过 bsp_fdcan 的订阅式接收接口处理标准数据帧。
  * CAN 回调运行在接收中断上下文：实时反馈直接解析，寄存器反馈只保存为每电机一份
  * 快照；任务上下文随后消费快照并推进参数读取状态机。
  *
@@ -29,7 +29,7 @@ motor_t motor[num];
  * 成功取走快照后清零。
  */
 typedef struct {
-  uint8_t data[BSP_CAN_DATA_SIZE]; ///< 最近一帧寄存器反馈数据
+  uint8_t data[BSP_FDCAN_CLASSIC_DATA_SIZE]; ///< 最近一帧寄存器反馈数据
   volatile bool pending;           ///< true 表示存在尚未消费的新快照
 } dm_motor_param_snapshot_t;
 
@@ -39,7 +39,7 @@ static dm_motor_param_snapshot_t dm_motor_param_snapshots[num];
 /**
  * @brief 在 CAN 回调中保存指定电机的最新寄存器反馈。
  * @param motor_index 全局 motor 数组中的电机索引。
- * @param rx_data 长度为 BSP_CAN_DATA_SIZE 的接收数据区。
+ * @param rx_data 长度为 BSP_FDCAN_CLASSIC_DATA_SIZE 的接收数据区。
  *
  * 本函数在接收中断上下文执行。先复制完整数据，再置 pending，确保任务侧看到
  * pending=true 时快照内容已经更新。
@@ -47,14 +47,14 @@ static dm_motor_param_snapshot_t dm_motor_param_snapshots[num];
 static void dm_motor_store_param_snapshot(motor_num motor_index,
                                           const uint8_t *rx_data) {
   memcpy(dm_motor_param_snapshots[motor_index].data, rx_data,
-         BSP_CAN_DATA_SIZE);
+         BSP_FDCAN_CLASSIC_DATA_SIZE);
   dm_motor_param_snapshots[motor_index].pending = true;
 }
 
 /**
  * @brief 在任务上下文原子地取出一个寄存器反馈快照。
  * @param target 必须指向全局 motor 数组中的某个电机对象。
- * @param rx_data 接收快照的 BSP_CAN_DATA_SIZE 字节缓冲区。
+ * @param rx_data 接收快照的 BSP_FDCAN_CLASSIC_DATA_SIZE 字节缓冲区。
  * @return 有待处理快照时返回 true，否则返回 false。
  *
  * 函数先把对象指针转换为数组索引，再短暂关闭中断，完成“检查 pending、复制数据、
@@ -78,7 +78,7 @@ static bool dm_motor_take_param_snapshot(motor_t *target, uint8_t *rx_data) {
   const bool pending = dm_motor_param_snapshots[motor_index].pending;
   if (pending) {
     memcpy(rx_data, dm_motor_param_snapshots[motor_index].data,
-           BSP_CAN_DATA_SIZE);
+           BSP_FDCAN_CLASSIC_DATA_SIZE);
     dm_motor_param_snapshots[motor_index].pending = false;
   }
   __set_PRIMASK(primask);
@@ -88,7 +88,7 @@ static bool dm_motor_take_param_snapshot(motor_t *target, uint8_t *rx_data) {
 /**
  * @brief 把一帧反馈分发给指定电机对象。
  * @param motor_index 目标电机在全局数组中的索引。
- * @param rx_data 长度为 BSP_CAN_DATA_SIZE 的接收数据区。
+ * @param rx_data 长度为 BSP_FDCAN_CLASSIC_DATA_SIZE 的接收数据区。
  *
  * 所有帧先经过实时反馈解码；当 byte2 为寄存器读取命令字 0x33 时，再保存一份参数
  * 快照，避免在中断中运行较长的参数状态机。
@@ -225,147 +225,147 @@ void dm_motor_init(void) {
  * 未收到反馈时 read_flag 保持不变，因此周期调用会重发当前寄存器请求。调用周期即
  * 重试间隔，应由任务调度控制，避免在高速循环中持续占用 CAN 总线。
  */
-void read_all_motor_data(STM32CAN_t *hcan, motor_t *motor) {
-  uint8_t rx_data[BSP_CAN_DATA_SIZE];
+void read_all_motor_data(STM32FDCAN_t *hfdcan, motor_t *motor) {
+  uint8_t rx_data[BSP_FDCAN_CLASSIC_DATA_SIZE];
   if (dm_motor_take_param_snapshot(motor, rx_data)) {
     receive_motor_data(motor, rx_data);
   }
 
   switch (motor->tmp.read_flag) {
   case 1:
-    read_motor_data(hcan, motor->id, 0);
+    read_motor_data(hfdcan, motor->id, 0);
     break; // UV_Value
   case 2:
-    read_motor_data(hcan, motor->id, 1);
+    read_motor_data(hfdcan, motor->id, 1);
     break; // KT_Value
   case 3:
-    read_motor_data(hcan, motor->id, 2);
+    read_motor_data(hfdcan, motor->id, 2);
     break; // OT_Value
   case 4:
-    read_motor_data(hcan, motor->id, 3);
+    read_motor_data(hfdcan, motor->id, 3);
     break; // OC_Value
   case 5:
-    read_motor_data(hcan, motor->id, 4);
+    read_motor_data(hfdcan, motor->id, 4);
     break; // ACC
   case 6:
-    read_motor_data(hcan, motor->id, 5);
+    read_motor_data(hfdcan, motor->id, 5);
     break; // DEC
   case 7:
-    read_motor_data(hcan, motor->id, 6);
+    read_motor_data(hfdcan, motor->id, 6);
     break; // MAX_SPD
   case 8:
-    read_motor_data(hcan, motor->id, 7);
+    read_motor_data(hfdcan, motor->id, 7);
     break; // MST_ID
   case 9:
-    read_motor_data(hcan, motor->id, 8);
+    read_motor_data(hfdcan, motor->id, 8);
     break; // ESC_ID
   case 10:
-    read_motor_data(hcan, motor->id, 9);
+    read_motor_data(hfdcan, motor->id, 9);
     break; // TIMEOUT
   case 11:
-    read_motor_data(hcan, motor->id, 10);
+    read_motor_data(hfdcan, motor->id, 10);
     break; // CTRL_MODE
   case 12:
-    read_motor_data(hcan, motor->id, 11);
+    read_motor_data(hfdcan, motor->id, 11);
     break; // Damp
   case 13:
-    read_motor_data(hcan, motor->id, 12);
+    read_motor_data(hfdcan, motor->id, 12);
     break; // Inertia
   case 14:
-    read_motor_data(hcan, motor->id, 13);
+    read_motor_data(hfdcan, motor->id, 13);
     break; // Rsv1
   case 15:
-    read_motor_data(hcan, motor->id, 14);
+    read_motor_data(hfdcan, motor->id, 14);
     break; // sw_ver
   case 16:
-    read_motor_data(hcan, motor->id, 15);
+    read_motor_data(hfdcan, motor->id, 15);
     break; // Rsv2
   case 17:
-    read_motor_data(hcan, motor->id, 16);
+    read_motor_data(hfdcan, motor->id, 16);
     break; // NPP
   case 18:
-    read_motor_data(hcan, motor->id, 17);
+    read_motor_data(hfdcan, motor->id, 17);
     break; // Rs
   case 19:
-    read_motor_data(hcan, motor->id, 18);
+    read_motor_data(hfdcan, motor->id, 18);
     break; // Ls
   case 20:
-    read_motor_data(hcan, motor->id, 19);
+    read_motor_data(hfdcan, motor->id, 19);
     break; // Flux
   case 21:
-    read_motor_data(hcan, motor->id, 20);
+    read_motor_data(hfdcan, motor->id, 20);
     break; // Gr
   case 22:
-    read_motor_data(hcan, motor->id, 21);
+    read_motor_data(hfdcan, motor->id, 21);
     break; // PMAX
   case 23:
-    read_motor_data(hcan, motor->id, 22);
+    read_motor_data(hfdcan, motor->id, 22);
     break; // VMAX
   case 24:
-    read_motor_data(hcan, motor->id, 23);
+    read_motor_data(hfdcan, motor->id, 23);
     break; // TMAX
   case 25:
-    read_motor_data(hcan, motor->id, 24);
+    read_motor_data(hfdcan, motor->id, 24);
     break; // I_BW
   case 26:
-    read_motor_data(hcan, motor->id, 25);
+    read_motor_data(hfdcan, motor->id, 25);
     break; // KP_ASR
   case 27:
-    read_motor_data(hcan, motor->id, 26);
+    read_motor_data(hfdcan, motor->id, 26);
     break; // KI_ASR
   case 28:
-    read_motor_data(hcan, motor->id, 27);
+    read_motor_data(hfdcan, motor->id, 27);
     break; // KP_APR
   case 29:
-    read_motor_data(hcan, motor->id, 28);
+    read_motor_data(hfdcan, motor->id, 28);
     break; // KI_APR
   case 30:
-    read_motor_data(hcan, motor->id, 29);
+    read_motor_data(hfdcan, motor->id, 29);
     break; // OV_Value
   case 31:
-    read_motor_data(hcan, motor->id, 30);
+    read_motor_data(hfdcan, motor->id, 30);
     break; // GREF
   case 32:
-    read_motor_data(hcan, motor->id, 31);
+    read_motor_data(hfdcan, motor->id, 31);
     break; // Deta
   case 33:
-    read_motor_data(hcan, motor->id, 32);
+    read_motor_data(hfdcan, motor->id, 32);
     break; // V_BW
   case 34:
-    read_motor_data(hcan, motor->id, 33);
+    read_motor_data(hfdcan, motor->id, 33);
     break; // IQ_cl
   case 35:
-    read_motor_data(hcan, motor->id, 34);
+    read_motor_data(hfdcan, motor->id, 34);
     break; // VL_cl
   case 36:
-    read_motor_data(hcan, motor->id, 35);
+    read_motor_data(hfdcan, motor->id, 35);
     break; // can_br
   case 37:
-    read_motor_data(hcan, motor->id, 36);
+    read_motor_data(hfdcan, motor->id, 36);
     break; // sub_ver
   case 38:
-    read_motor_data(hcan, motor->id, 50);
+    read_motor_data(hfdcan, motor->id, 50);
     break; // u_off
   case 39:
-    read_motor_data(hcan, motor->id, 51);
+    read_motor_data(hfdcan, motor->id, 51);
     break; // v_off
   case 40:
-    read_motor_data(hcan, motor->id, 52);
+    read_motor_data(hfdcan, motor->id, 52);
     break; // k1
   case 41:
-    read_motor_data(hcan, motor->id, 53);
+    read_motor_data(hfdcan, motor->id, 53);
     break; // k2
   case 42:
-    read_motor_data(hcan, motor->id, 54);
+    read_motor_data(hfdcan, motor->id, 54);
     break; // m_off
   case 43:
-    read_motor_data(hcan, motor->id, 55);
+    read_motor_data(hfdcan, motor->id, 55);
     break; // dir
   case 44:
-    read_motor_data(hcan, motor->id, 80);
+    read_motor_data(hfdcan, motor->id, 80);
     break; // p_m
   case 45:
-    read_motor_data(hcan, motor->id, 81);
+    read_motor_data(hfdcan, motor->id, 81);
     break; // x_out
   }
 }
@@ -373,7 +373,7 @@ void read_all_motor_data(STM32CAN_t *hcan, motor_t *motor) {
 /**
  * @brief 解析寄存器反馈，更新参数镜像并推进读取状态。
  * @param motor 接收参数结果的电机对象。
- * @param data 长度为 BSP_CAN_DATA_SIZE 的寄存器反馈数据区。
+ * @param data 长度为 BSP_FDCAN_CLASSIC_DATA_SIZE 的寄存器反馈数据区。
  *
  * 仅在 read_flag 非 0 且 byte2 为读取命令字 0x33 时处理数据。byte3 是寄存器编号，
  * byte4～7 按小端顺序重解释为 float 或 uint32_t：
@@ -682,17 +682,18 @@ float set_dm_motor_tor(int tor_int, float t_max, float t_min) {
  *
  * @note 此函数运行在 BSP CAN 接收回调上下文中，应保持短小且不得执行阻塞操作。
  */
-void dm_can1_rx_callback(STM32CAN_t *hcan,
-                         const BSP_CAN_Frame_t *frame,
-                         void *context) {
+void dm_fdcan1_rx_callback(STM32FDCAN_t *hfdcan,
+                           const BSP_FDCAN_Frame_t *frame,
+                           void *context) {
   (void)context;
 
-  ASSERT(hcan != NULL);
+  ASSERT(hfdcan != NULL);
   ASSERT(frame != NULL);
-  if ((hcan == NULL) || (frame == NULL) ||
-      (frame->ide_ != CAN_ID_STD) ||
-      (frame->rtr_ != CAN_RTR_DATA) ||
-      (frame->size_ != BSP_CAN_DATA_SIZE)) {
+  if ((hfdcan == NULL) || (frame == NULL) ||
+      (frame->id_type_ != FDCAN_STANDARD_ID) ||
+      (frame->frame_type_ != FDCAN_DATA_FRAME) ||
+      (frame->fd_format_ != FDCAN_CLASSIC_CAN) ||
+      (frame->size_ != BSP_FDCAN_CLASSIC_DATA_SIZE)) {
     return;
   }
 
@@ -721,33 +722,30 @@ void dm_can1_rx_callback(STM32CAN_t *hcan,
 }
 
 /**
- * @brief 预留的第二路 CAN 接收回调。
- * @param hcan 触发回调的 BSP CAN 设备。
- * @param frame 接收到的 CAN 帧。
+ * @brief 预留的第二路 FDCAN 接收回调。
+ * @param hfdcan 触发回调的 BSP FDCAN 设备。
+ * @param frame 接收到的 FDCAN 帧。
  * @param context 订阅者上下文。
- *
- * 当前六个电机全部由 dm_can1_rx_callback() 处理，本占位函数不解析任何帧，便于后续
- * 扩展到第二路 CAN 时保持接口形式一致。
  */
-void dm_can2_rx_callback(STM32CAN_t *hcan,
-                         const BSP_CAN_Frame_t *frame,
-                         void *context) {
-  (void)hcan;
+void dm_fdcan2_rx_callback(STM32FDCAN_t *hfdcan,
+                           const BSP_FDCAN_Frame_t *frame,
+                           void *context) {
+  (void)hfdcan;
   (void)frame;
   (void)context;
 }
 
 /**
- * @brief 把达妙电机反馈回调订阅到一个 BSP CAN 设备。
- * @param can 已完成 STM32CAN_Init() 的 CAN 设备对象。
- * @return can 为 NULL 时返回 PTR_NULL；否则返回 STM32CAN_SubscribeRx() 的结果。
+ * @brief 把达妙电机反馈回调订阅到一个 BSP FDCAN 设备。
+ * @param fdcan 已完成 STM32FDCAN_Init() 的 FDCAN 设备对象。
+ * @return fdcan 为 NULL 时返回 PTR_NULL；否则返回 STM32FDCAN_SubscribeRx() 的结果。
  *
- * 本函数只注册订阅关系，不负责初始化或启动 CAN 外设。应用层应在 CAN 设备初始化后、
+ * 本函数只注册订阅关系，不负责初始化或启动 FDCAN 外设。应用层应在 FDCAN 设备初始化后、
  * 接收中断开始工作前调用一次，避免重复占用订阅槽位。
  */
-err_t dm_motor_attach_can(STM32CAN_t *can) {
-  if (can == NULL) {
+err_t dm_motor_attach_fdcan(STM32FDCAN_t *fdcan) {
+  if (fdcan == NULL) {
     return PTR_NULL;
   }
-  return STM32CAN_SubscribeRx(can, dm_can1_rx_callback, NULL);
+  return STM32FDCAN_SubscribeRx(fdcan, dm_fdcan1_rx_callback, NULL);
 }

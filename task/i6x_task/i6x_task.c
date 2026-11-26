@@ -12,13 +12,13 @@
 //! 全局 I6x 对象指针，供其他业务模块读取遥控器状态。
 I6X_t* i6x = NULL;
 
-//! I6x FreeRTOS 任务：初始化 USART1 接收，并周期性刷新在线状态和解析结果。
+//! I6x FreeRTOS 任务：初始化 USART10 接收，并周期性刷新在线状态和解析结果。
 void i6x_task(void* argument) {
   RM_UNUSED(argument);
 
   LOG_DEBUG("I6X任务", "任务开始初始化遥控器");
   static I6X_t i6x_instance;  // 静态存储，保证任务整个生命周期内有效。
-  err_t status = I6X_Init(&i6x_instance, &huart4);
+  err_t status = I6X_Init(&i6x_instance, &huart10);
   i6x = &i6x_instance;
 
   i6x->thread_alert = xTaskGetCurrentTaskHandle();

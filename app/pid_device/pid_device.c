@@ -37,13 +37,14 @@ static void pid_device_log_failure(const pid_device_t* device,
                                    float feedforward) {
 #if BSP_LOG_ENABLED
   if ((device == NULL) || (device->motor == NULL) ||
-      (device->motor->bus == NULL) || (device->motor->bus->can == NULL)) {
+      (device->motor->bus == NULL) || (device->motor->bus->fdcan == NULL)) {
     return;
   }
 
-  const unsigned can_number = (unsigned)device->motor->bus->can->id_ + 1U;
+  const unsigned fdcan_number = (unsigned)device->motor->bus->fdcan->id_ + 1U;
   const unsigned motor_id = (unsigned)device->motor->device_id;
-  const unsigned fault_bit = (can_number - 1U) * 2U + (transmission ? 1U : 0U);
+  const unsigned fault_bit =
+      (fdcan_number - 1U) * 2U + (transmission ? 1U : 0U);
   if ((fault_bit < 32U) &&
       ((atomic_load_explicit(&pid_device_can_fault_reported, memory_order_relaxed) &
         (1UL << fault_bit)) != 0UL)) {
@@ -53,8 +54,8 @@ static void pid_device_log_failure(const pid_device_t* device,
   char target_text[32];
   char feedforward_text[32];
   const err_t log_result = LOG_FATAL("电机控制",
-            "CAN%u %s失败 motor=%u err=%d rpm=%s ff=%s",
-            can_number, operation, motor_id, (int)result,
+            "FDCAN%u %s失败 motor=%u err=%d rpm=%s ff=%s",
+            fdcan_number, operation, motor_id, (int)result,
             Float2StrN(target_text, sizeof(target_text), target_rpm) >= 0
                 ? target_text : "<invalid>",
             Float2StrN(feedforward_text, sizeof(feedforward_text), feedforward) >= 0

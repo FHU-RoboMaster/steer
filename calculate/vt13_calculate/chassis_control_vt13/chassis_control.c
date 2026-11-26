@@ -8,10 +8,10 @@
 #include <math.h>
 #include <stdbool.h>
 
-#include "bsp_can.h"
-#include "can.h"
+#include "bsp_fdcan.h"
 #include "chassis_dynamics.h"
 #include "dj_motor_ctrl.h"
+#include "fdcan.h"
 #include "pid_location.h"
 #include "process.h"
 #include "vt13.h"
@@ -39,22 +39,22 @@ static float torque_ff_current[4];
  * @return OK 或错误码
  */
 err_t chassis_control_init(void) {
-  LOG_DEBUG("底盘计算", "开始初始化 VT13 底盘 CAN 总线和电机");
-  /* 获取 CAN2 的 BSP 对象（假设 CAN2 用于底盘） */
-  BSP_CAN_t can_id = BSP_CAN_get_id(CAN2);
-  if (can_id == BSP_CAN_ID_ERROR) {
-    LOG_ERROR("底盘计算", "未找到 VT13 底盘 CAN2 对象");
+  LOG_DEBUG("底盘计算", "开始初始化 VT13 底盘 FDCAN 总线和电机");
+  /* 获取 FDCAN2 的 BSP 对象（假设 FDCAN2 用于底盘） */
+  BSP_FDCAN_t fdcan_id = BSP_FDCAN_get_id(FDCAN2);
+  if (fdcan_id == BSP_FDCAN_ID_ERROR) {
+    LOG_ERROR("底盘计算", "未找到 VT13 底盘 FDCAN2 对象");
     return NOT_FOUND;
   }
 
-  STM32CAN_t* can2 = STM32CAN_GetInstance(can_id);
-  if (can2 == NULL) {
-    LOG_ERROR("底盘计算", "VT13 底盘 CAN2 控制块为空");
+  STM32FDCAN_t* fdcan2 = STM32FDCAN_GetInstance(fdcan_id);
+  if (fdcan2 == NULL) {
+    LOG_ERROR("底盘计算", "VT13 底盘 FDCAN2 控制块为空");
     return PTR_NULL;
   }
 
   /* 初始化底盘总线 */
-  chassis_bus_init_result = dj_motor_bus_init(&chassis_bus, can2);
+  chassis_bus_init_result = dj_motor_bus_init(&chassis_bus, fdcan2);
   if (chassis_bus_init_result != OK) {
     LOG_ERROR("底盘计算", "VT13 底盘总线初始化失败，错误码=%d",
               (int)chassis_bus_init_result);

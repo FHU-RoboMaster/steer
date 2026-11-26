@@ -8,11 +8,11 @@
 #include <math.h>
 #include <stdbool.h>
 
-#include "bsp_can.h"
-#include "can.h"
+#include "bsp_fdcan.h"
 #include "comp_utils.h"
 #include "dj_motor_ctrl.h"
 #include "dr16.h"
+#include "fdcan.h"
 #include "pid_location.h"
 
 /* DR16 task owns the decoded command and updates it periodically. */
@@ -67,26 +67,26 @@ static bool shoot_stop_pid_reset_done; /* 停机后是否已复位运行期 PID 
  * @return OK 或错误码
  */
 err_t shoot_control_init(void) {
-  LOG_DEBUG("发射计算", "开始初始化发射 CAN 总线和电机");
-  /* 获取 CAN1 的 BSP 对象（假设 CAN1 用于发射机构，与云台同总线）
-   * CAN2 上底盘已占用 0x200 控制组的 1-4 号电机，发射机构不能复用同组 ID */
-  ASSERT(CAN1 != NULL);
-  BSP_CAN_t can_id = BSP_CAN_get_id(CAN1);
-  ASSERT(can_id != BSP_CAN_ID_ERROR);
-  if (can_id == BSP_CAN_ID_ERROR) {
-    LOG_ERROR("发射计算", "未找到 CAN1 对象");
+  LOG_DEBUG("发射计算", "开始初始化发射 FDCAN 总线和电机");
+  /* 获取 FDCAN1 的 BSP 对象（假设 FDCAN1 用于发射机构，与云台同总线）
+   * FDCAN2 上底盘已占用 0x200 控制组的 1-4 号电机，发射机构不能复用同组 ID */
+  ASSERT(FDCAN1 != NULL);
+  BSP_FDCAN_t fdcan_id = BSP_FDCAN_get_id(FDCAN1);
+  ASSERT(fdcan_id != BSP_FDCAN_ID_ERROR);
+  if (fdcan_id == BSP_FDCAN_ID_ERROR) {
+    LOG_ERROR("发射计算", "未找到 FDCAN1 对象");
     return NOT_FOUND;
   }
 
-  STM32CAN_t *can1 = STM32CAN_GetInstance(can_id);
-  ASSERT(can1 != NULL);
-  if (can1 == NULL) {
-    LOG_ERROR("发射计算", "CAN1 控制块为空");
+  STM32FDCAN_t *fdcan1 = STM32FDCAN_GetInstance(fdcan_id);
+  ASSERT(fdcan1 != NULL);
+  if (fdcan1 == NULL) {
+    LOG_ERROR("发射计算", "FDCAN1 控制块为空");
     return PTR_NULL;
   }
 
   /* 初始化发射机构总线 */
-  shoot_bus_init_result = dj_motor_bus_init(&shoot_bus, can1);
+  shoot_bus_init_result = dj_motor_bus_init(&shoot_bus, fdcan1);
   if (shoot_bus_init_result != OK) {
     LOG_ERROR("发射计算", "发射 CAN 总线初始化失败，错误码=%d",
               (int)shoot_bus_init_result);

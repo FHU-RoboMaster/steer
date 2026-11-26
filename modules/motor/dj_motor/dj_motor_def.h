@@ -20,7 +20,7 @@
  * ## 发送语义（写齐再发）
  *
  * 控制组维护 group_mask（已注册成员）与 pending_mask（本轮已写命令成员）。
- * 当两者相等时，ctrl 层打包 8 字节大端帧并通过 bsp_can 发送。安全停机请使用
+ * 当两者相等时，ctrl 层打包 8 字节大端帧并通过 bsp_fdcan 发送。安全停机请使用
  * dj_motor_zero_and_flush()，不要依赖”碰巧写齐”。
  *
  * @note 位置在反馈快照中提供 rad 和 deg；输出轴角速度单位为 rad/s；命令为协议原始
@@ -28,7 +28,7 @@
  */
 #pragma once
 
-#include "bsp_can.h"
+#include "bsp_fdcan.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -72,8 +72,8 @@ typedef enum {
 /**
  * @brief 控制组标准帧 ID。
  *
- * 枚举值与实际 11 bit 标准帧 ID 数值一致，可直接作为 STM32CAN_Send 的 std_id。
- * 同一 CAN 上不同型号可能共享 0x1FF 控制组，但槽位不得冲突。
+ * 枚举值与实际 11 bit 标准帧 ID 数值一致，可直接作为 STM32FDCAN_SendStd 的 std_id。
+ * 同一 FDCAN 上不同型号可能共享 0x1FF 控制组，但槽位不得冲突。
  */
 typedef enum {
   DJ_MOTOR_GROUP_200 = 0x200, /**< M3508/M2006 设备 ID 1–4 */
@@ -153,15 +153,15 @@ typedef struct {
 } dj_motor_group_state_t;
 
 /**
- * @brief 单条 CAN 总线上的 DJ 协议对象。
+ * @brief 单条 FDCAN 总线上的 DJ 协议对象。
  *
- * 由调用方静态分配，生命周期须覆盖 CAN 运行期。dj_motor_bus_init() 会：
- * 清零对象、绑定 STM32CAN_t、初始化三组控制组 ID，并向该 CAN 注册一个
- * RX 订阅（context 指向本 bus）。同一 CAN 上不论有多少电机，只占用一个
- * bsp_can 订阅槽。
+ * 由调用方静态分配，生命周期须覆盖 FDCAN 运行期。dj_motor_bus_init() 会：
+ * 清零对象、绑定 STM32FDCAN_t、初始化控制组 ID，并向该 FDCAN 注册一个
+ * RX 订阅（context 指向本 bus）。同一 FDCAN 上不论有多少电机，只占用一个
+ * bsp_fdcan 订阅槽。
  */
 typedef struct {
-  STM32CAN_t *can;           /**< 绑定的 BSP CAN 设备，不可为 NULL */
+  STM32FDCAN_t *fdcan;       /**< 绑定的 BSP FDCAN 设备，不可为 NULL */
   dj_motor_t *motors[DJ_MOTOR_BUS_CAPACITY]; /**< 注册顺序保存的电机指针表 */
   dj_motor_group_state_t groups[DJ_MOTOR_GROUP_COUNT]; /**< 0:0x200 1:0x1FE 2:0x1FF 3:0x2FE 4:0x2FF */
   uint8_t motor_count;       /**< 当前已注册电机数量，0..CAPACITY */

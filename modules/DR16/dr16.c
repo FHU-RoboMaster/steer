@@ -6,7 +6,7 @@
 
 // ==================== DMA 缓冲与对象状态 ====================
 
-static uint8_t dma_buffer_[DR16_FRAME_SIZE * 2];
+static BSP_UART_DMA_BUFFER(dma_buffer_, DR16_FRAME_SIZE * 2U);
 static uint8_t dr16_rx_buffer_[DR16_FRAME_SIZE];
 static uint8_t dr16_frame_accumulator_[DR16_FRAME_SIZE];
 static size_t dr16_frame_accumulator_size_ = 0U;
